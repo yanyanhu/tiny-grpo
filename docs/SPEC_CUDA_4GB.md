@@ -6,12 +6,13 @@
 > this machine.
 >
 > **Read this before changing any default.** 4 GB of *dedicated* VRAM is
-> genuinely tight for this workload, even at 135M parameters — a second full
-> model copy for the KL reference, generation activations for multiple
-> completions per prompt, and LoRA optimizer state all compete for the same
-> small budget. Treat this profile as memory-constrained-first: validate any
-> config change with a short smoke run before a longer one, and don't assume
-> settings that are safe on `mps_16gb` are safe here.
+> genuinely tight for this workload, even at 135M parameters — the base model,
+> generation activations for multiple completions per prompt, and LoRA
+> optimizer state all compete for the same small budget (the KL reference
+> computation itself is cheap under LoRA — see "Reference Model / KL
+> Coefficient" below). Treat this profile as memory-constrained-first:
+> validate any config change with a short smoke run before a longer one, and
+> don't assume settings that are safe on `mps_16gb` are safe here.
 
 ## Target Environment
 
@@ -43,7 +44,7 @@ Unlike the MPS profile, do not start with fp32. CUDA's fp16/bf16 support is
 mature, and fp32 training at this VRAM budget is unlikely to leave enough
 headroom for anything beyond a trivial batch size.
 
-1. **bf16 mixed precision** — preferred starting point. RTX 2050 (Ampere) has
+1. **bf16 mixed precision** — preferred starting point. RTX 3050 (Ampere) has
    bf16 tensor core support.
 2. **fp16 mixed precision** — use if bf16 isn't behaving well for some reason;
    CUDA fp16 training is mature and well-trodden, unlike MPS fp16.
@@ -51,19 +52,35 @@ headroom for anything beyond a trivial batch size.
    not a normal operating mode on this profile — expect to need a much smaller
    batch size if you drop to it.
 
+**Verified at startup, not assumed:** before training starts, the code checks
+`torch.cuda.is_bf16_supported(including_emulation=False)` — real Ampere+
+tensor-core support, not degraded software emulation — whenever this profile's
+resolved precision is `bf16`. If unsupported, it **fails loudly with a clear
+error** rather than silently substituting fp16 or fp32. This matches the
+project's "no silent fallback" stance (see Out-of-Memory Handling below):
+if this specific GPU can't do real bf16, that's something to see and decide
+about explicitly, not something the code should quietly work around. fp16 has
+no equivalent hardware-capability query on CUDA (it's supported on effectively
+every CUDA GPU), so it isn't gated the same way.
+
 ## Reference Model / KL Coefficient (`beta`)
 
-**Default to `beta=0` (no separate reference model) on this profile.** Loading
-a second full copy of the model for the KL reference roughly doubles model
-memory footprint, which is a significant fraction of a 4 GB budget even at
-135M parameters.
+**Default to a small non-zero `beta` (0.04, matching `mps_16gb`) on this
+profile.** This project always trains through LoRA (see `docs/PROJECT_SPEC.md`
+— "Adaptation: LoRA"), and TRL never loads a second full model copy for the KL
+reference when the model is a PEFT model: it either disables the adapter to
+recover the base model's log probs, or clones a tiny extra adapter for
+`beta != 0` (confirmed against the installed `trl` source). The "second full
+model roughly doubles memory footprint" concern that previously justified
+`beta=0` here doesn't apply once LoRA is in use — the reference computation's
+memory cost is negligible on either hardware profile.
 
-If `beta > 0` is specifically needed:
-- treat it as an experiment, not a default;
-- expect to reduce batch size, `num_generations`, or `max_completion_length`
-  further to compensate;
-- validate with a smoke run and check CUDA memory stats before trusting it
-  won't OOM mid-run.
+`beta=0` (no reference at all) is still fully supported as an explicit,
+deliberate mode if you want to skip the KL term entirely — just no longer the
+*default* on this profile. If memory pressure appears for other reasons:
+- treat further precision/batch/length changes as the fix, not `beta`;
+- validate with a smoke run and check CUDA memory stats before trusting any
+  change won't OOM mid-run.
 
 ## Gradient Checkpointing
 
@@ -88,7 +105,7 @@ scaling up, and change one setting at a time so an OOM is attributable.
 | `batch_size` | 1 | Start here; this is not a placeholder to "fix" later, it may simply be right-sized for the VRAM budget |
 | `gradient_accumulation_steps` | 8–16 | Compensates for `batch_size=1` to reach a reasonable effective batch size |
 | `gradient_checkpointing` | on (required default) | See above |
-| `beta` | 0 (default) | See above |
+| `beta` | 0.04 (default) | See above — no longer 0 by default now that LoRA makes the reference-computation memory cost negligible |
 
 ## Out-of-Memory Handling
 

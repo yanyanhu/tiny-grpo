@@ -21,6 +21,10 @@ class DeviceUnavailableError(RuntimeError):
     """Raised when a profile's required device isn't available."""
 
 
+class PrecisionUnsupportedError(RuntimeError):
+    """Raised when the active device doesn't actually support the configured precision."""
+
+
 @dataclasses.dataclass(frozen=True)
 class HardwareProfile:
     name: str
@@ -71,7 +75,14 @@ CUDA_4GB = HardwareProfile(
     per_device_train_batch_size=4,
     gradient_accumulation_steps=8,
     gradient_checkpointing=True,
-    beta=0.0,
+    # SPEC_CUDA_4GB.md originally defaulted this to 0.0 to avoid loading a
+    # second full model copy for the KL reference. With LoRA (see
+    # tiny_grpo/lora.py), TRL never loads a second full model regardless of
+    # beta — it disables/clones a tiny adapter instead (confirmed against
+    # trl/trainer/grpo_trainer.py) — so that rationale no longer applies.
+    # Aligned with MPS_16GB's value now that both profiles carry the same
+    # (negligible) reference-computation memory cost under LoRA.
+    beta=0.04,
     max_prompt_length=128,
     max_completion_length=128,
     env_setup={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
@@ -119,3 +130,53 @@ def resolve_device(profile: HardwareProfile, available_devices: dict | None = No
             f"which is not available (available_devices={available_devices})"
         )
     return profile.device
+
+
+def resolve_dtype(precision: Precision):
+    """Map a precision string to the torch dtype to load model weights in.
+
+    None means "let the loader use its own default" (float32, confirmed
+    against the installed trl's GRPOTrainer docstring). GRPOConfig(bf16=True)/
+    (fp16=True) only control mixed-precision autocast during training, not the
+    stored weight dtype — this is what actually makes bf16/fp16 profiles load
+    bf16/fp16 weights.
+    """
+    import torch
+
+    return {"fp32": None, "bf16": torch.bfloat16, "fp16": torch.float16}[precision]
+
+
+def verify_precision_supported(device: Device, precision: Precision, *, bf16_supported: bool | None = None) -> None:
+    """Fail loudly if `precision` isn't actually supported on `device` — never
+    silently substitute a different precision (same principle as this
+    project's OOM-handling stance: hiding what actually happened breaks
+    reproducibility).
+
+    Only checks combinations with a reliable hardware-capability query:
+    - cuda + bf16: `torch.cuda.is_bf16_supported(including_emulation=False)` —
+      real Ampere+ tensor-core support, not degraded software emulation.
+    - fp16 on CUDA is supported on effectively every CUDA GPU; not checked.
+    - mps has no equivalent static capability query in PyTorch, so precision
+      compatibility there is verified empirically instead, via
+      tests/test_mps_integration.py — not gated here.
+    Every other (device, precision) combination is a no-op.
+
+    `bf16_supported` overrides the real `torch.cuda.is_bf16_supported()` query
+    — pass it explicitly in tests to check this logic without needing a real
+    CUDA device; omit it in production to query torch directly.
+    """
+    if device != "cuda" or precision != "bf16":
+        return
+
+    if bf16_supported is None:
+        import torch
+
+        bf16_supported = torch.cuda.is_available() and torch.cuda.is_bf16_supported(including_emulation=False)
+
+    if not bf16_supported:
+        raise PrecisionUnsupportedError(
+            "cuda_4gb defaults to bf16, but this GPU does not report real bf16 tensor-core "
+            "support (torch.cuda.is_bf16_supported(including_emulation=False) is False; "
+            "requires Ampere or newer, compute capability >= 8.0). Override precision "
+            "explicitly (e.g. to fp16) rather than assuming the default works here."
+        )

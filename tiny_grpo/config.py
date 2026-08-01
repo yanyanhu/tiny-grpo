@@ -97,14 +97,50 @@ def validate(config: TrainingConfig) -> None:
     if config.beta < 0:
         raise ConfigError(f"beta must be >= 0, got {config.beta}")
 
-    if config.num_generations < 1:
-        raise ConfigError(f"num_generations must be >= 1, got {config.num_generations}")
+    # trl's GRPOConfig hard-requires >= 2 (raises ValueError otherwise): with a
+    # single generation there's nothing to compare within a group, so no
+    # advantage can be computed. Enforced here too so this fails at config
+    # construction, not deep inside GRPOTrainer.
+    if config.num_generations < 2:
+        raise ConfigError(f"num_generations must be >= 2 (GRPO needs a group to compare), got {config.num_generations}")
 
+    # Note: per_device_train_batch_size counts completions (rows, post prompt-
+    # repeat-expansion), not unique prompts — trl's own
+    # generation_batch_size = per_device_train_batch_size * num_processes * steps_per_generation
+    # has no separate "* num_generations" factor, which only holds together
+    # dimensionally if per_device_train_batch_size is already in the same
+    # (completions) units as generation_batch_size. Confirmed directly against
+    # the RepeatSampler diagram in trl/trainer/grpo_trainer.py's
+    # _get_train_sampler: per_device_train_batch_size=3 there means 3
+    # completion-rows per device, not 3 prompts (with num_processes > 1, a
+    # single prompt's repeats can even be split across devices — gathered back
+    # together for reward normalization; irrelevant here since this project
+    # never uses >1 process).
+    #
+    # trl's real constraint on the *train* side is on its own derived
+    # generation_batch_size = per_device_train_batch_size * gradient_accumulation_steps
+    # (this project never sets generation_batch_size/steps_per_generation
+    # explicitly, and never uses >1 process, so this is exactly how trl
+    # computes it) — that product must be a multiple of num_generations.
+    # Separately, trl's *eval* side requires per_device_eval_batch_size %
+    # num_generations == 0, with no grad-accumulation multiplier. Since this
+    # project always sets per_device_eval_batch_size equal to
+    # per_device_train_batch_size (see train_grpo.py's build_grpo_config —
+    # there's no independent eval batch size field), checking
+    # per_device_train_batch_size alone is the real necessary condition (for
+    # eval) and is automatically sufficient for train too: if
+    # per_device_train_batch_size already divides evenly, any multiple of it
+    # via gradient_accumulation_steps does too. Do not "simplify" this to just
+    # checking generation_batch_size — that would accept configs whose eval
+    # batch size doesn't divide evenly (e.g. batch=2, grad_accum=2,
+    # num_generations=4: generation_batch_size=4 passes, but eval reuses
+    # per_device_train_batch_size=2, which does not).
     if config.per_device_train_batch_size % config.num_generations != 0:
         raise ConfigError(
             f"per_device_train_batch_size ({config.per_device_train_batch_size}) must be a "
             f"multiple of num_generations ({config.num_generations}) so every device holds "
-            "complete prompt groups"
+            "complete prompt groups (required for both training and eval batches, since "
+            "eval reuses this same value)"
         )
 
     # SPEC_CUDA_4GB.md: gradient checkpointing is a required default on this

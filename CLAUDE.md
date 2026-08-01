@@ -90,6 +90,11 @@ SPEC docs. Do not assume MPS defaults are safe on CUDA or vice versa.
   Directory Cleanup" in `docs/PROJECT_SPEC.md`.
 - No CUDA-only or MPS-only code path may be required to run — both must stay
   supported, gated by config/device resolution, not by editing code per machine.
+- **Verify hardware precision support, don't silently substitute.** On
+  `cuda_4gb`, `bf16` is checked against `torch.cuda.is_bf16_supported()` at
+  startup and fails loudly if unsupported — it never silently falls back to
+  fp16/fp32. Same principle as OOM handling: hiding what actually happened
+  breaks reproducibility. See `docs/SPEC_CUDA_4GB.md` / `SPEC_MACOS_MPS.md`.
 
 ## Known, expected (not bugs)
 

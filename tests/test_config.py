@@ -48,7 +48,10 @@ def test_profile_picks_up_hardware_specific_values():
     assert mps_config.gradient_checkpointing is False
     assert cuda_config.precision == "bf16"
     assert cuda_config.gradient_checkpointing is True
-    assert cuda_config.beta == 0.0
+    # 0.04, not 0.0: under LoRA, TRL never loads a second full model for the KL
+    # reference regardless of beta, so the memory-cost rationale for
+    # defaulting to 0 here no longer applies (see tiny_grpo/hardware.py).
+    assert cuda_config.beta == 0.04
 
 
 def test_smoke_caps_max_completion_length_below_hardware_default_on_mps():
@@ -104,6 +107,37 @@ def test_batch_size_not_multiple_of_num_generations_raises():
     with pytest.raises(ConfigError):
         TrainingConfig(
             run_name="x", hardware_profile_name=MPS_16GB.name, num_generations=3, per_device_train_batch_size=4
+        )
+
+
+def test_num_generations_below_two_raises():
+    # trl's own GRPOConfig hard-requires >= 2 — a single generation leaves
+    # nothing to compare within a group, so no advantage can be computed.
+    with pytest.raises(ConfigError):
+        TrainingConfig(run_name="x", hardware_profile_name=MPS_16GB.name, num_generations=1)
+
+
+def test_num_generations_two_is_valid():
+    config = TrainingConfig(
+        run_name="x", hardware_profile_name=MPS_16GB.name, num_generations=2, per_device_train_batch_size=2
+    )
+    assert config.num_generations == 2
+
+
+def test_batch_divisibility_rejects_configs_that_would_pass_a_naive_grad_accum_check():
+    # A config where per_device_train_batch_size * gradient_accumulation_steps
+    # IS a multiple of num_generations (4), but per_device_train_batch_size
+    # alone is NOT (2 % 4 != 0). trl's real train-side constraint is on the
+    # product (would pass), but eval always reuses per_device_train_batch_size
+    # directly with no grad-accumulation multiplier, so this must still be
+    # rejected — locks in the reasoning in tiny_grpo/config.py's validate().
+    with pytest.raises(ConfigError):
+        TrainingConfig(
+            run_name="x",
+            hardware_profile_name=MPS_16GB.name,
+            num_generations=4,
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=2,
         )
 
 

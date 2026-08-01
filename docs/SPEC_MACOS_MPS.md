@@ -36,6 +36,14 @@ Order of preference, moving to the next only after verifying stability:
    gaps and stability issues; only use after specifically verifying it holds
    up on this machine, not by default.
 
+**No startup capability check on this profile, unlike `cuda_4gb`.** PyTorch
+exposes `torch.cuda.is_bf16_supported()` for CUDA but has no equivalent static
+capability query for MPS, so precision compatibility here can't be gated
+before training starts the same way. Instead it's verified empirically via
+`tests/test_mps_integration.py`, which loads the real model at each precision
+and runs a short generation — run that (or a smoke run) after changing
+precision, rather than assuming it works.
+
 ## Reference Model / KL Coefficient (`beta`)
 
 At this model scale (135M) and 16 GB unified memory, loading a separate

@@ -8,7 +8,7 @@
 > Concrete hardware settings (device, precision, batch size, gradient
 > checkpointing, KL/reference-model defaults, memory reporting APIs) live in:
 > - `docs/SPEC_MACOS_MPS.md` — MacBook Pro M2, 16 GB unified memory
-> - `docs/SPEC_CUDA_4GB.md` — RTX 2050 laptop GPU, 4 GB dedicated VRAM
+> - `docs/SPEC_CUDA_4GB.md` — RTX 3050 laptop GPU, 4 GB dedicated VRAM
 >
 > Read the profile doc matching your machine alongside this one before
 > running anything — this file will tell you *what* to configure; the
@@ -190,6 +190,38 @@ At minimum, configuration must cover:
 - output directory;
 - resume settings;
 - which hardware profile a run used (recorded, not just applied, so logs are self-describing).
+
+**GRPO batch-divisibility constraint (validate at config construction, not at
+trainer construction):**
+- `per_device_train_batch_size` counts *completions* (rows, after each prompt
+  is repeated `num_generations` times), not unique prompts — a reasonable
+  assumption to have but not what trl implements. Confirmed two ways against
+  the installed trl: (1) `generation_batch_size = per_device_train_batch_size
+  * num_processes * steps_per_generation` has no separate `* num_generations`
+  factor, which only holds dimensionally if `per_device_train_batch_size` is
+  already in completions units; (2) the `RepeatSampler` diagram in
+  `trl/trainer/grpo_trainer.py`'s `_get_train_sampler` — measured by column
+  position, not eyeballed — shows `per_device_train_batch_size=3` as 3
+  completion-rows per device (with `num_processes > 1`, a single prompt's
+  repeats can even be split across devices and gathered back together for
+  reward normalization; irrelevant here since this project never uses more
+  than one process).
+- `num_generations` must be >= 2 — GRPO needs at least a group of 2 completions
+  per prompt to compute an advantage; trl's `GRPOConfig` hard-rejects `< 2`.
+- `per_device_train_batch_size` must be an exact multiple of `num_generations`,
+  so every device holds complete prompt groups. This is stricter than trl's
+  raw training-side requirement (which only requires
+  `per_device_train_batch_size * gradient_accumulation_steps` to be a multiple
+  of `num_generations`) — but this project always sets the eval batch size
+  equal to `per_device_train_batch_size` with no independent field, and trl's
+  eval-side constraint applies with no gradient-accumulation multiplier. So
+  checking `per_device_train_batch_size` alone is the real necessary condition
+  (for eval) and remains sufficient for training. Do not loosen this check to
+  the raw training-side formula without also giving eval its own,
+  independently-validated batch size.
+- Validate both of these when the config is constructed, so a bad combination
+  fails immediately with a clear message — not deep inside `GRPOTrainer`
+  construction or, worse, only once eval fires mid-run.
 
 Support separate run profiles for smoke / debug / longer, each usable with
 either hardware profile.

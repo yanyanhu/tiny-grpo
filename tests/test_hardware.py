@@ -7,10 +7,13 @@ from tiny_grpo.hardware import (
     CUDA_4GB,
     MPS_16GB,
     DeviceUnavailableError,
+    PrecisionUnsupportedError,
     UnknownHardwareProfileError,
     detect_available_devices,
     resolve_device,
+    resolve_dtype,
     resolve_hardware_profile,
+    verify_precision_supported,
 )
 
 
@@ -64,6 +67,42 @@ def test_batch_size_is_multiple_of_preferred_num_generations_on_both_profiles():
     preferred_num_generations = 4
     assert MPS_16GB.per_device_train_batch_size % preferred_num_generations == 0
     assert CUDA_4GB.per_device_train_batch_size % preferred_num_generations == 0
+
+
+def test_resolve_dtype_fp32_means_loader_default():
+    assert resolve_dtype("fp32") is None
+
+
+def test_resolve_dtype_bf16_and_fp16():
+    import torch
+
+    assert resolve_dtype("bf16") is torch.bfloat16
+    assert resolve_dtype("fp16") is torch.float16
+
+
+def test_verify_precision_cuda_bf16_supported_is_noop():
+    verify_precision_supported("cuda", "bf16", bf16_supported=True)  # must not raise
+
+
+def test_verify_precision_cuda_bf16_unsupported_raises():
+    with pytest.raises(PrecisionUnsupportedError):
+        verify_precision_supported("cuda", "bf16", bf16_supported=False)
+
+
+@pytest.mark.parametrize(
+    "device,precision",
+    [
+        ("cuda", "fp16"),
+        ("cuda", "fp32"),
+        ("mps", "bf16"),
+        ("mps", "fp16"),
+        ("mps", "fp32"),
+    ],
+)
+def test_verify_precision_only_checks_cuda_bf16(device, precision):
+    # Every other combination is a no-op even if bf16_supported=False is passed
+    # in, since it's irrelevant to non-(cuda, bf16) combinations.
+    verify_precision_supported(device, precision, bf16_supported=False)  # must not raise
 
 
 def test_detect_available_devices_shape():

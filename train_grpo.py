@@ -16,7 +16,14 @@ from transformers import TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
 from tiny_grpo.config import TrainingConfig, debug_config, longer_config, smoke_config
-from tiny_grpo.hardware import HARDWARE_PROFILES, resolve_device, resolve_hardware_profile
+from tiny_grpo.hardware import (
+    HARDWARE_PROFILES,
+    resolve_device,
+    resolve_dtype,
+    resolve_hardware_profile,
+    verify_precision_supported,
+)
+from tiny_grpo.lora import to_peft_lora_config
 from tiny_grpo.monitoring import device_memory_mb, process_memory_mb
 from tiny_grpo.rewards import accuracy_reward, format_reward, to_prompt
 from tiny_grpo.run_context import make_run_dir, save_run_metadata, update_run_status
@@ -121,6 +128,15 @@ def build_datasets(config: TrainingConfig):
 
 
 def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
+    model_init_kwargs = {
+        # device_map="auto" (trl's default when loading a model by name) hangs on MPS;
+        # force a plain single-device load instead.
+        "device_map": None,
+    }
+    dtype = resolve_dtype(config.precision)
+    if dtype is not None:
+        model_init_kwargs["dtype"] = dtype
+
     return GRPOConfig(
         output_dir=str(run_dir),
         seed=config.seed,
@@ -150,9 +166,7 @@ def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
         num_completions_to_print=4,
         bf16=config.precision == "bf16",
         fp16=config.precision == "fp16",
-        # device_map="auto" (trl's default when loading a model by name) hangs on MPS;
-        # force a plain single-device load instead.
-        model_init_kwargs={"device_map": None},
+        model_init_kwargs=model_init_kwargs,
     )
 
 
@@ -174,6 +188,7 @@ def main():
     verification_run = args.verification_run if args.verification_run is not None else (args.profile == "smoke")
 
     config = RUN_PROFILES[args.profile](hardware)
+    verify_precision_supported(device, config.precision)  # fails loudly, never silently substitutes
 
     for env_name, env_value in config.env_setup.items():
         os.environ[env_name] = env_value
@@ -192,6 +207,7 @@ def main():
         args=grpo_config,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
+        peft_config=to_peft_lora_config(config.lora),
         callbacks=[
             JsonlLoggerCallback(run_dir / "metrics.jsonl", device=device),
             ConsoleProgressCallback(device=device),
