@@ -1,4 +1,6 @@
 #!/bin/bash
+# Usage: ./run_with_watchdog.sh --profile {smoke,debug,longer} --hardware {mps_16gb,cuda_4gb} [other train_grpo.py args...]
+# All arguments are forwarded to train_grpo.py as-is (e.g. --hardware is required there).
 set -u
 cd "$(dirname "$0")"
 
@@ -6,7 +8,7 @@ LOGFILE="run.log"
 : > "$LOGFILE"
 
 export PATH="$HOME/.local/bin:$PATH"
-uv run python -u train_grpo.py >> "$LOGFILE" 2>&1 &
+uv run python -u train_grpo.py "$@" >> "$LOGFILE" 2>&1 &
 PID=$!
 
 START=$(date +%s)

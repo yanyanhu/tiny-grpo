@@ -1,43 +1,74 @@
 # grpo-test
 
 Small, understandable GRPO training project: fine-tune
-`HuggingFaceTB/SmolLM2-135M-Instruct` on GSM8K with TRL's `GRPOTrainer`, targeting
-an Apple M2 MacBook Pro (MPS backend, 16GB unified memory). See `CLAUDE.md` and
-`docs/PROJECT_SPEC.md` for the full design and current milestone.
+`HuggingFaceTB/SmolLM2-135M-Instruct` on GSM8K with TRL's `GRPOTrainer` + LoRA,
+supporting two hardware profiles — an M2 MacBook Pro (`mps_16gb`) and an RTX
+3050 laptop (`cuda_4gb`). See `CLAUDE.md` and `docs/PROJECT_SPEC.md` (plus
+`docs/SPEC_MACOS_MPS.md` / `docs/SPEC_CUDA_4GB.md` for the concrete per-profile
+settings) for the full design and current milestone.
 
 ## Running
 
 ```sh
-uv run python train_grpo.py --profile smoke   # default; also: debug, longer
+uv run python train_grpo.py --profile smoke --hardware mps_16gb
 ```
 
-or, to run in the background with a watchdog that kills the process if it hangs or
-runs too long:
+- `--profile`: `smoke` (default, fast sanity check) / `debug` / `longer`.
+  `longer` is bigger and slower — start it deliberately, never as routine
+  verification.
+- `--hardware`: required, `mps_16gb` or `cuda_4gb`.
+
+To run in the background with a watchdog that kills the process if it hangs
+or runs too long:
 
 ```sh
-./run_with_watchdog.sh
+./run_with_watchdog.sh --profile smoke --hardware mps_16gb
 ```
 
-`longer` is a bigger, slower profile — start it deliberately, never as routine
-verification.
+### Resuming an interrupted run
+
+```sh
+uv run python train_grpo.py --profile smoke --hardware mps_16gb --resume latest
+```
+
+Resume is **opt-in only** — `--resume` defaults to `none`, so a plain re-run
+is always fresh. `--resume latest` continues the most recent incomplete run
+matching the same `--profile`/`--hardware`, if one exists; `--resume <path>`
+targets an explicit checkpoint or run directory. Resuming a checkpoint saved
+under a *different* hardware profile fails loudly unless you also pass
+`--allow-cross-profile-resume` (see `tiny_grpo/resume.py`).
 
 ## Output layout
 
 Every invocation creates a fresh, uniquely-named directory under `outputs/`
-(e.g. `outputs/smoke_20260801_145837/`) — a run is never silently overwritten.
+(e.g. `outputs/smoke_20260801_211021/`) — a run is never silently overwritten,
+except when explicitly resumed (which reuses the original run's directory).
 Each run directory contains:
 
-- `config.json` — the fully resolved `TrainingConfig` used for that run.
-- `environment.json` — pinned package versions (`torch`, `transformers`, `trl`,
-  `accelerate`, `datasets`, `peft`) and Python/platform info.
+- `config.json` — the fully resolved config for that run (run profile ×
+  hardware profile, LoRA settings, everything else).
+- `environment.json` — pinned package versions (`torch`, `transformers`,
+  `trl`, `accelerate`, `datasets`, `peft`) and Python/platform info.
 - `split_metadata.json` — the exact train/validation/test indices and seed
   selected from GSM8K for that run (see `tiny_grpo/splits.py`).
+- `run_tags.json` — run profile, hardware profile, verification-run flag, and
+  status (`running`/`completed`/`failed`) — what `tiny_grpo/cleanup.py` and
+  `tiny_grpo/resume.py` key off, not directory naming.
 - `metrics.jsonl` — every `trainer.log()` call (train and eval), one JSON
-  object per line, including process and MPS memory at that point.
+  object per line, including process memory and device-appropriate memory
+  (`mps_memory_mb` or `cuda_memory_mb`, whichever is active).
 - `completions/completions_*.parquet` — sampled (prompt, completion, reward
   breakdown, extracted answer, gold answer, advantage) rows per logging step.
-- `checkpoint-*/` — model/optimizer/scheduler state; capped at the 2 most
-  recent per run (`checkpoint_retention` in config, hard-capped at 2).
+- `eval_baseline.json` / `eval_post_training.json` — accuracy, format rate,
+  parse-failure rate, mean reward, mean completion length, runtime, memory,
+  and sample completions, before and after training, against the same
+  validation set/generation settings/answer extraction (see
+  `tiny_grpo/evaluate.py`). A resumed run doesn't recompute the baseline —
+  it's read back from the original run's file.
+- `checkpoint-*/` — LoRA adapter + optimizer/scheduler state; capped at the 2
+  most recent per run (`checkpoint_retention` in config, hard-capped at 2).
+- `final_adapter/` — the final trained LoRA adapter, kept independent of the
+  2-checkpoint rolling cap.
 - `tensorboard/` — `tensorboard --logdir outputs/<run>/tensorboard` for charts.
 
 While training runs, a single throttled console line shows step/elapsed/ETA/
@@ -46,21 +77,46 @@ source of truth.
 
 ## Disk usage and cleanup
 
-At the current stage (full fine-tuning, fp32, no LoRA yet), each run's 2
-retained checkpoints total **~3GB** (`model.safetensors` + Adam's optimizer
-state for all 135M params). This shrinks substantially once LoRA lands, since
-only adapter weights get checkpointed — but until then, repeated smoke/debug
-runs during development can silently eat disk space.
+Training goes through LoRA adapters, not full fine-tuning, so checkpoints are
+small — a full smoke run's 2 retained checkpoints + final adapter typically
+total **~30MB**, not gigabytes.
 
-Nothing deletes old run directories automatically. Prune them explicitly:
+Nothing deletes old run directories automatically. Manage them explicitly:
 
 ```sh
-uv run python -m tiny_grpo.cleanup --keep 3            # keep the 3 most recent runs
-uv run python -m tiny_grpo.cleanup --keep 3 --dry-run   # preview what would be removed
+uv run python -m tiny_grpo.cleanup list                        # see tagged runs, age, size
+uv run python -m tiny_grpo.cleanup prune --keep 3               # keep the 3 most recent verification runs
+uv run python -m tiny_grpo.cleanup prune --keep 3 --dry-run     # preview without deleting
+uv run python -m tiny_grpo.cleanup prune --older-than-days 7    # age-based pruning
 ```
 
-It only ever removes whole run directories (oldest first) and always prints
-what it removes — never silent, never automatic.
+Only runs tagged `verification_run=True` (smoke runs, by default) are ever
+eligible for deletion — `debug`/`longer` runs and untagged/foreign
+directories are never touched, and the most recent *failed* run of a given
+profile is protected until a later success supersedes it. Always prints what
+it finds/removes — never silent.
+
+## Hardware profiles (`tiny_grpo/hardware.py`)
+
+| | `mps_16gb` | `cuda_4gb` |
+|---|---|---|
+| Precision | fp32 | bf16 |
+| Gradient checkpointing | off | on (required) |
+| `beta` (KL coefficient) | 0.04 | 0.04 |
+
+Both profiles prefer `num_generations=4`. `beta` is the same on both profiles
+because LoRA means TRL never loads a second full reference model regardless
+of `beta` — it disables/clones a tiny adapter instead, so the old
+memory-cost argument for `cuda_4gb` defaulting to `beta=0` no longer applies.
+
+`verify_precision_supported` checks `torch.cuda.is_bf16_supported()` at
+startup on `cuda_4gb` and **fails loudly** (never silently substitutes a
+different precision) if the GPU doesn't actually support real bf16.
+
+## LoRA (`tiny_grpo/lora.py`)
+
+All training goes through LoRA adapters (`peft`), not full fine-tuning —
+checkpoints and the final adapter are adapter-only.
 
 ## Reward functions (`tiny_grpo/rewards.py`)
 
@@ -72,9 +128,10 @@ answer</answer>`. Two reward functions:
 - `format_reward` — 0.2 if the completion has a valid numeric `<answer>` tag at
   all, regardless of correctness, else 0.0.
 
-Both are pure functions, unit tested without loading a model (`tests/test_rewards.py`).
-On this tiny model, `accuracy_reward` frequently stays at 0 for a whole run —
-expected at this scale, not a bug (see `CLAUDE.md`).
+Both are pure functions, unit tested without loading a model
+(`tests/test_rewards.py`). On this tiny model, `accuracy_reward` frequently
+stays at 0 for a whole smoke run — expected at this scale, not a bug (see
+`CLAUDE.md`).
 
 ## Dataset splits (`tiny_grpo/splits.py`)
 
@@ -83,14 +140,22 @@ a separate test split held out from GSM8K's **test** split (reserved for a
 one-time final evaluation once a configuration is chosen — not used during
 iterative training/eval). Indices are persisted per-run in `split_metadata.json`.
 
+## Evaluation (`tiny_grpo/evaluate.py`)
+
+Baseline (pre-training) and post-training validation against the same
+held-out set, reusing training's exact generation settings (temperature/
+top_p/top_k straight off the resolved `GRPOConfig`) and exact answer-extraction
+logic (`tiny_grpo.rewards`) — never a separate reimplementation that could
+silently drift. Prints a concise before/after comparison and persists both
+passes to the run directory.
+
 ## Configuration (`tiny_grpo/config.py`)
 
-Typed `TrainingConfig` with three profiles:
-
-- `smoke_config()` — fast sanity check (64/16/32 train/val/test, 10 steps).
-- `debug_config()` — larger iteration profile (256/32/64, 50 steps).
-- `longer_config()` — explicit-experiment profile (1024/64/128, 200 steps);
-  never launched automatically.
+A `TrainingConfig` is a **run profile** (`smoke_config()` / `debug_config()` /
+`longer_config()` — training length, logging/checkpoint/eval cadence) composed
+with a **hardware profile** (`tiny_grpo.hardware.MPS_16GB` /
+`CUDA_4GB` — device, precision, batch size, gradient checkpointing, `beta`).
+Neither hardcodes the other's settings.
 
 ## Testing
 
@@ -98,6 +163,10 @@ Typed `TrainingConfig` with three profiles:
 uv run pytest -q tests/
 ```
 
-CPU-only, no model or dataset download — covers reward/answer extraction,
-split determinism and overlap, config validation, run-directory/metadata
-persistence, memory reporting, and cleanup pruning.
+Mostly CPU-only, model-free unit tests — reward/answer extraction, split
+determinism and overlap, config validation, hardware-profile resolution
+(mocked device availability), cleanup/resume selection logic (synthetic
+tagged directories) — plus two real integration tests
+(`tests/test_mps_integration.py`, `tests/test_cuda_integration.py`) that load
+the actual model on whichever device is present and skip (not fail) when
+that device isn't available on the machine running them.

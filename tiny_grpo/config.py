@@ -42,10 +42,13 @@ class DatasetConfig:
 
 @dataclasses.dataclass(frozen=True)
 class ResumeConfig:
-    # "latest": resume from the most recent checkpoint in output_dir if one exists.
-    # "none": always start fresh, even if checkpoints are present.
-    # Any other string: an explicit checkpoint path to resume from.
-    mode: Literal["latest", "none"] | str = "latest"
+    # "latest": resume from the most recent matching (same run profile +
+    # hardware profile) incomplete run under output_dir, if one exists.
+    # "none": always start fresh, even if a resumable run exists. Default —
+    # resume is opt-in only, so a plain re-run is always guaranteed fresh.
+    # Any other string: an explicit checkpoint or run-directory path to
+    # resume from (see tiny_grpo/resume.py).
+    mode: Literal["latest", "none"] | str = "none"
 
 
 @dataclasses.dataclass(frozen=True)

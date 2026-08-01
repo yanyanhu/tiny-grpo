@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -15,7 +16,7 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
-from tiny_grpo.config import TrainingConfig, debug_config, longer_config, smoke_config
+from tiny_grpo.config import ResumeConfig, TrainingConfig, debug_config, longer_config, smoke_config
 from tiny_grpo.evaluate import evaluate_model
 from tiny_grpo.hardware import (
     HARDWARE_PROFILES,
@@ -26,6 +27,7 @@ from tiny_grpo.hardware import (
 )
 from tiny_grpo.lora import to_peft_lora_config
 from tiny_grpo.monitoring import device_memory_mb, process_memory_mb
+from tiny_grpo.resume import resolve_resume_target
 from tiny_grpo.rewards import accuracy_reward, format_reward, to_prompt
 from tiny_grpo.run_context import make_run_dir, save_run_metadata, update_run_status
 from tiny_grpo.splits import build_split_metadata, select_split
@@ -177,6 +179,11 @@ def _write_eval_result(run_dir: Path, name: str, result: dict) -> None:
     (run_dir / f"eval_{name}.json").write_text(json.dumps(result, indent=2))
 
 
+def _read_eval_result(run_dir: Path, name: str) -> dict | None:
+    path = run_dir / f"eval_{name}.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
 def _print_eval_comparison(baseline: dict, post_training: dict) -> None:
     print("\n=== Baseline vs. post-training evaluation ===")
     fields = [
@@ -204,6 +211,18 @@ def main():
         help="Tag this run as verification-only (auto-deletion-eligible via tiny_grpo.cleanup). "
         "Defaults to True for --profile smoke, False otherwise.",
     )
+    parser.add_argument(
+        "--resume",
+        default="none",
+        help='"none" (default, always fresh), "latest" (resume the most recent incomplete run of the '
+        "same --profile/--hardware, if one exists), or an explicit checkpoint/run-directory path.",
+    )
+    parser.add_argument(
+        "--allow-cross-profile-resume",
+        action="store_true",
+        help="Allow resuming a checkpoint that was run under a different --hardware profile "
+        "(otherwise this fails loudly rather than silently attempting it).",
+    )
     args = parser.parse_args()
 
     hardware = resolve_hardware_profile(args.hardware)
@@ -211,13 +230,31 @@ def main():
     verification_run = args.verification_run if args.verification_run is not None else (args.profile == "smoke")
 
     config = RUN_PROFILES[args.profile](hardware)
+    config = dataclasses.replace(config, resume=ResumeConfig(mode=args.resume))
     verify_precision_supported(device, config.precision)  # fails loudly, never silently substitutes
 
     for env_name, env_value in config.env_setup.items():
         os.environ[env_name] = env_value
 
-    run_dir = make_run_dir(config.output_dir, config.run_name)
-    print(f"Run directory: {run_dir}  (hardware={hardware.name}, device={device}, verification_run={verification_run})")
+    resume_target = resolve_resume_target(
+        config.resume.mode,
+        config.output_dir,
+        config.run_name,
+        hardware.name,
+        allow_cross_profile=args.allow_cross_profile_resume,
+    )
+    if resume_target is not None:
+        run_dir = resume_target.run_dir
+        checkpoint_path = resume_target.checkpoint_path
+        print(
+            f"Resuming from checkpoint: {checkpoint_path} (run dir: {run_dir}, "
+            f"originally run on hardware profile: {resume_target.origin_hardware_profile!r})"
+        )
+    else:
+        run_dir = make_run_dir(config.output_dir, config.run_name)
+        checkpoint_path = None
+        print(f"Starting fresh run: {run_dir}")
+    print(f"(hardware={hardware.name}, device={device}, verification_run={verification_run})")
 
     train_dataset, val_dataset, split_metadata = build_datasets(config)
     save_run_metadata(run_dir, config, split_metadata, verification_run=verification_run)
@@ -243,9 +280,16 @@ def main():
     )
 
     try:
-        print("Running baseline evaluation (pre-training)...")
-        baseline_eval = evaluate_model(model, tokenizer, val_dataset, device, **eval_kwargs)
-        _write_eval_result(run_dir, "baseline", baseline_eval)
+        # Baseline eval only makes sense once, at true step 0 — on a resumed
+        # run the model is already partially trained, so re-running it would
+        # mislabel a partially-trained checkpoint as "baseline". Reuse the
+        # original run's eval_baseline.json instead.
+        if checkpoint_path is None:
+            print("Running baseline evaluation (pre-training)...")
+            baseline_eval = evaluate_model(model, tokenizer, val_dataset, device, **eval_kwargs)
+            _write_eval_result(run_dir, "baseline", baseline_eval)
+        else:
+            baseline_eval = _read_eval_result(run_dir, "baseline")
 
         trainer = GRPOTrainer(
             model=model,
@@ -260,12 +304,12 @@ def main():
             ],
         )
 
-        # Every run gets a fresh, uniquely-named directory (see make_run_dir),
-        # so there is never a checkpoint to resume from yet. Resume support
-        # (explicit checkpoint path, fresh-vs-resumed reporting, cross-profile
-        # mismatch check) is a later stage's scope.
-        print("Starting fresh run (resume support lands in a later stage).")
-        trainer.train(resume_from_checkpoint=None)
+        trainer.train(resume_from_checkpoint=checkpoint_path)
+
+        # The final adapter, kept independent of the 2-checkpoint rolling cap
+        # (save_total_limit only governs checkpoint-N dirs) — this is the
+        # selected result, not training-state history.
+        trainer.save_model(str(run_dir / "final_adapter"))
 
         print("Running post-training evaluation...")
         post_training_eval = evaluate_model(trainer.model, tokenizer, val_dataset, device, **eval_kwargs)
@@ -276,7 +320,10 @@ def main():
     else:
         update_run_status(run_dir, "completed")
 
-    _print_eval_comparison(baseline_eval, post_training_eval)
+    if baseline_eval is not None:
+        _print_eval_comparison(baseline_eval, post_training_eval)
+    else:
+        print("\n(No baseline evaluation available to compare against — eval_baseline.json was missing.)")
 
 
 if __name__ == "__main__":
