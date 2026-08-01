@@ -12,10 +12,11 @@ import time
 from pathlib import Path
 
 from datasets import load_dataset
-from transformers import TrainerCallback
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
 from tiny_grpo.config import TrainingConfig, debug_config, longer_config, smoke_config
+from tiny_grpo.evaluate import evaluate_model
 from tiny_grpo.hardware import (
     HARDWARE_PROFILES,
     resolve_device,
@@ -127,16 +128,19 @@ def build_datasets(config: TrainingConfig):
     return train_dataset, val_dataset, split_metadata
 
 
-def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
-    model_init_kwargs = {
-        # device_map="auto" (trl's default when loading a model by name) hangs on MPS;
+def model_init_kwargs(config: TrainingConfig) -> dict:
+    kwargs = {
+        # device_map="auto" (the default when loading a model by name) hangs on MPS;
         # force a plain single-device load instead.
         "device_map": None,
     }
     dtype = resolve_dtype(config.precision)
     if dtype is not None:
-        model_init_kwargs["dtype"] = dtype
+        kwargs["dtype"] = dtype
+    return kwargs
 
+
+def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
     return GRPOConfig(
         output_dir=str(run_dir),
         seed=config.seed,
@@ -166,8 +170,27 @@ def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
         num_completions_to_print=4,
         bf16=config.precision == "bf16",
         fp16=config.precision == "fp16",
-        model_init_kwargs=model_init_kwargs,
     )
+
+
+def _write_eval_result(run_dir: Path, name: str, result: dict) -> None:
+    (run_dir / f"eval_{name}.json").write_text(json.dumps(result, indent=2))
+
+
+def _print_eval_comparison(baseline: dict, post_training: dict) -> None:
+    print("\n=== Baseline vs. post-training evaluation ===")
+    fields = [
+        ("accuracy", "{:.3f}"),
+        ("format_rate", "{:.3f}"),
+        ("parse_failure_rate", "{:.3f}"),
+        ("mean_reward", "{:.3f}"),
+        ("mean_completion_length", "{:.1f}"),
+        ("runtime_seconds", "{:.1f}"),
+        ("process_memory_mb", "{:.0f}"),
+    ]
+    for key, fmt in fields:
+        print(f"  {key:24s} baseline={fmt.format(baseline[key]):>10s}  post_training={fmt.format(post_training[key]):>10s}")
+    print(f"  num_examples: {baseline['num_examples']}")
 
 
 def main():
@@ -201,31 +224,59 @@ def main():
 
     grpo_config = build_grpo_config(config, run_dir)
 
-    trainer = GRPOTrainer(
-        model=config.model_id,
-        reward_funcs=[accuracy_reward, format_reward],
-        args=grpo_config,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        peft_config=to_peft_lora_config(config.lora),
-        callbacks=[
-            JsonlLoggerCallback(run_dir / "metrics.jsonl", device=device),
-            ConsoleProgressCallback(device=device),
-        ],
+    print(f"Loading model {config.model_id!r} (precision={config.precision})...")
+    model = AutoModelForCausalLM.from_pretrained(config.model_id, **model_init_kwargs(config))
+    model.to(device)
+    tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Same generation settings for baseline and post-training eval as training
+    # itself uses (spec requirement) — read straight off the resolved
+    # GRPOConfig rather than duplicating separate constants that could drift.
+    eval_kwargs = dict(
+        max_new_tokens=config.max_completion_length,
+        temperature=grpo_config.temperature,
+        top_p=grpo_config.top_p,
+        top_k=grpo_config.top_k,
+        seed=config.seed,
     )
 
-    # Every run gets a fresh, uniquely-named directory (see make_run_dir), so
-    # there is never a checkpoint to resume from yet. Resume support (explicit
-    # checkpoint path, fresh-vs-resumed reporting, cross-profile mismatch check)
-    # is a later stage's scope.
-    print("Starting fresh run (resume support lands in a later stage).")
     try:
+        print("Running baseline evaluation (pre-training)...")
+        baseline_eval = evaluate_model(model, tokenizer, val_dataset, device, **eval_kwargs)
+        _write_eval_result(run_dir, "baseline", baseline_eval)
+
+        trainer = GRPOTrainer(
+            model=model,
+            reward_funcs=[accuracy_reward, format_reward],
+            args=grpo_config,
+            train_dataset=train_dataset,
+            eval_dataset=val_dataset,
+            peft_config=to_peft_lora_config(config.lora),
+            callbacks=[
+                JsonlLoggerCallback(run_dir / "metrics.jsonl", device=device),
+                ConsoleProgressCallback(device=device),
+            ],
+        )
+
+        # Every run gets a fresh, uniquely-named directory (see make_run_dir),
+        # so there is never a checkpoint to resume from yet. Resume support
+        # (explicit checkpoint path, fresh-vs-resumed reporting, cross-profile
+        # mismatch check) is a later stage's scope.
+        print("Starting fresh run (resume support lands in a later stage).")
         trainer.train(resume_from_checkpoint=None)
+
+        print("Running post-training evaluation...")
+        post_training_eval = evaluate_model(trainer.model, tokenizer, val_dataset, device, **eval_kwargs)
+        _write_eval_result(run_dir, "post_training", post_training_eval)
     except BaseException:
         update_run_status(run_dir, "failed")
         raise
     else:
         update_run_status(run_dir, "completed")
+
+    _print_eval_comparison(baseline_eval, post_training_eval)
 
 
 if __name__ == "__main__":
