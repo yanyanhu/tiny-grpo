@@ -7,9 +7,29 @@ they can be unit tested without downloading anything.
 import re
 
 SYSTEM_PROMPT = (
-    "You are a careful math tutor. Solve the problem step by step, "
-    "then end your response with a new line of the form:\n"
-    "<answer>final numeric answer</answer>"
+    "You are a careful math tutor. Solve the problem step by step. "
+    "Your response MUST end with exactly one line in this exact format, "
+    "with nothing written after it:\n"
+    "<answer>NUMBER</answer>\n"
+    "Do not write \"Final answer\", a restated sentence, or anything else after "
+    "solving the problem — the very last line of your response must be the "
+    "<answer> tag and nothing more."
+)
+
+# Two worked few-shot examples, unrelated to GSM8K (no leakage risk), shown as
+# actual prior turns rather than described in text. A single example wasn't
+# enough for SmolLM2-135M to override its own habit of concluding with
+# "Final answer:" instead of the tag (confirmed empirically — see CLAUDE.md)
+# — two repetitions of the exact pattern reinforce it further.
+_FEW_SHOT_QUESTION_1 = "A store has 3 boxes with 4 apples in each box. How many apples are there in total?"
+_FEW_SHOT_ANSWER_1 = (
+    "There are 3 boxes with 4 apples each, so the total is 3 * 4 = 12 apples.\n"
+    "<answer>12</answer>"
+)
+_FEW_SHOT_QUESTION_2 = "Tom has 10 marbles and gives away 4 of them. How many marbles does he have left?"
+_FEW_SHOT_ANSWER_2 = (
+    "Tom starts with 10 marbles and gives away 4, so he has 10 - 4 = 6 marbles left.\n"
+    "<answer>6</answer>"
 )
 
 # GSM8K's ground-truth `answer` field always ends with a line like "#### 42" —
@@ -60,6 +80,10 @@ def to_prompt(example: dict) -> dict:
     return {
         "prompt": [
             {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": _FEW_SHOT_QUESTION_1},
+            {"role": "assistant", "content": _FEW_SHOT_ANSWER_1},
+            {"role": "user", "content": _FEW_SHOT_QUESTION_2},
+            {"role": "assistant", "content": _FEW_SHOT_ANSWER_2},
             {"role": "user", "content": example["question"]},
         ],
         "answer": extract_gold_answer(example["answer"]),

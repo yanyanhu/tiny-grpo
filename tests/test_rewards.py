@@ -135,7 +135,12 @@ class TestToPrompt:
         result = to_prompt(example)
         assert result["answer"] == "4"
         assert result["prompt"][0]["role"] == "system"
-        assert result["prompt"][1] == {"role": "user", "content": "What is 2+2?"}
+        # Two few-shot examples (user+assistant pairs) come before the real question.
+        roles = [m["role"] for m in result["prompt"]]
+        assert roles == ["system", "user", "assistant", "user", "assistant", "user"]
+        assert "<answer>" in result["prompt"][2]["content"]
+        assert "<answer>" in result["prompt"][4]["content"]
+        assert result["prompt"][-1] == {"role": "user", "content": "What is 2+2?"}
 
     def test_never_leaks_gold_answer_into_prompt(self):
         example = {"question": "What is seven times six?", "answer": "Multiply.\n#### 42"}

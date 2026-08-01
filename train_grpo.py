@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+import ast
 import dataclasses
 import json
 import os
@@ -121,11 +122,16 @@ def build_datasets(config: TrainingConfig):
         seed=config.dataset.split_seed,
     )
 
+    # load_from_cache_file=False: datasets.map() fingerprints by more than just
+    # source code in ways that don't reliably invalidate on every to_prompt
+    # edit (confirmed empirically — a prompt-wording change silently kept
+    # serving stale cached prompts). to_prompt is pure and these datasets are
+    # tiny, so re-mapping is effectively free — always recompute instead.
     train_dataset = select_split(train_pool, split_metadata.train_indices).map(
-        to_prompt, remove_columns=train_pool.column_names
+        to_prompt, remove_columns=train_pool.column_names, load_from_cache_file=False
     )
     val_dataset = select_split(train_pool, split_metadata.val_indices).map(
-        to_prompt, remove_columns=train_pool.column_names
+        to_prompt, remove_columns=train_pool.column_names, load_from_cache_file=False
     )
     return train_dataset, val_dataset, split_metadata
 
@@ -223,6 +229,15 @@ def main():
         help="Allow resuming a checkpoint that was run under a different --hardware profile "
         "(otherwise this fails loudly rather than silently attempting it).",
     )
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="FIELD=VALUE",
+        help="Override a top-level resolved TrainingConfig field for this run, e.g. "
+        "--set max_completion_length=128. Repeatable. VALUE is parsed as a Python literal "
+        "(int/float/bool/str) via ast.literal_eval, falling back to the raw string.",
+    )
     args = parser.parse_args()
 
     hardware = resolve_hardware_profile(args.hardware)
@@ -231,6 +246,13 @@ def main():
 
     config = RUN_PROFILES[args.profile](hardware)
     config = dataclasses.replace(config, resume=ResumeConfig(mode=args.resume))
+    for item in args.set:
+        field, _, raw_value = item.partition("=")
+        try:
+            value = ast.literal_eval(raw_value)
+        except (ValueError, SyntaxError):
+            value = raw_value
+        config = dataclasses.replace(config, **{field: value})
     verify_precision_supported(device, config.precision)  # fails loudly, never silently substitutes
 
     for env_name, env_value in config.env_setup.items():

@@ -1,6 +1,8 @@
 #!/bin/bash
 # Usage: ./run_with_watchdog.sh --profile {smoke,debug,longer} --hardware {mps_16gb,cuda_4gb} [other train_grpo.py args...]
 # All arguments are forwarded to train_grpo.py as-is (e.g. --hardware is required there).
+# Override the watchdog's own timeouts via env vars, e.g. for a longer experiment:
+#   STALL_LIMIT=600 HARD_TIMEOUT=3600 ./run_with_watchdog.sh --profile debug --hardware mps_16gb
 set -u
 cd "$(dirname "$0")"
 
@@ -14,8 +16,8 @@ PID=$!
 START=$(date +%s)
 LAST_SIZE=-1
 LAST_CHANGE=$START
-STALL_LIMIT=360   # 6 min with no new output => treat as hung
-HARD_TIMEOUT=1800 # 30 min absolute cap
+STALL_LIMIT="${STALL_LIMIT:-360}"     # 6 min with no new output => treat as hung
+HARD_TIMEOUT="${HARD_TIMEOUT:-1800}"  # 30 min absolute cap
 CHECK_INTERVAL=15
 
 STATUS="unknown"
