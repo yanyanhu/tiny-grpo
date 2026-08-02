@@ -71,6 +71,11 @@ class TrainingConfig:
     num_generations: int = 4
     max_prompt_length: int = 256
     max_completion_length: int = 128
+    # Sampling is explicit rather than inherited silently from a versioned TRL
+    # default so training, evaluation, and rollout diagnostics remain comparable.
+    temperature: float = 1.0
+    top_p: float = 1.0
+    top_k: int = 0
     per_device_train_batch_size: int = 4
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
@@ -171,6 +176,15 @@ def validate(config: TrainingConfig) -> None:
 
     if config.learning_rate <= 0:
         raise ConfigError(f"learning_rate must be > 0, got {config.learning_rate}")
+
+    if config.temperature <= 0:
+        raise ConfigError(f"temperature must be > 0, got {config.temperature}")
+
+    if not 0 < config.top_p <= 1:
+        raise ConfigError(f"top_p must be in (0, 1], got {config.top_p}")
+
+    if config.top_k < 0:
+        raise ConfigError(f"top_k must be >= 0, got {config.top_k}")
 
     for field_name in ("train_size", "val_size", "test_size"):
         size = getattr(config.dataset, field_name)

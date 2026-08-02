@@ -162,6 +162,9 @@ def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
         # silently; config.max_prompt_length stays recorded for documentation and
         # for whenever a trl version that supports it is adopted.
         max_completion_length=config.max_completion_length,
+        temperature=config.temperature,
+        top_p=config.top_p,
+        top_k=config.top_k,
         beta=config.beta,
         learning_rate=config.learning_rate,
         logging_steps=config.logging_steps,

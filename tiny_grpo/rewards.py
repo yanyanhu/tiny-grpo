@@ -5,6 +5,7 @@ they can be unit tested without downloading anything.
 """
 
 import re
+from decimal import Decimal, InvalidOperation
 
 SYSTEM_PROMPT = (
     "You are a careful math tutor. Solve the problem step by step. "
@@ -47,11 +48,26 @@ FORMAT_REWARD_VALUE = 0.2
 ACCURACY_REWARD_VALUE = 1.0
 
 
-def _normalize_captured_number(raw: str) -> str | None:
+def normalize_numeric_answer(raw: str) -> str | None:
+    """Return a canonical exact-decimal representation of a bare number.
+
+    Parsing remains deliberately strict (no units, prose, fractions, exponent
+    notation, NaN, or infinity), but representation-only differences must not
+    turn a mathematically exact answer into a zero reward: ``42``, ``42.0``,
+    ``042``, and ``42.000`` all canonicalize to ``"42"``. Decimal avoids the
+    rounding ambiguity that a float-based comparison would introduce.
+    """
     cleaned = raw.strip().replace(",", "")
     if not _NUMBER_ONLY_RE.fullmatch(cleaned):
         return None
-    return cleaned
+    try:
+        value = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+
+    if value == 0:
+        return "0"
+    return format(value.normalize(), "f")
 
 
 def extract_gold_answer(answer_text: str) -> str | None:
@@ -59,7 +75,7 @@ def extract_gold_answer(answer_text: str) -> str | None:
     match = _GOLD_NUMBER_RE.search(answer_text)
     if not match:
         return None
-    return match.group(1).replace(",", "").strip()
+    return normalize_numeric_answer(match.group(1))
 
 
 def extract_predicted_answer(completion_text: str) -> str | None:
@@ -72,7 +88,7 @@ def extract_predicted_answer(completion_text: str) -> str | None:
     match = _ANSWER_TAG_RE.search(completion_text)
     if not match:
         return None
-    return _normalize_captured_number(match.group(1))
+    return normalize_numeric_answer(match.group(1))
 
 
 def to_prompt(example: dict) -> dict:
@@ -108,8 +124,13 @@ def accuracy_reward(completions, answer, **kwargs) -> list[float]:
     predicted_answers = []
     for completion, gold in zip(completions, answer):
         predicted = extract_predicted_answer(_completion_text(completion))
+        canonical_gold = normalize_numeric_answer(gold) if gold is not None else None
         predicted_answers.append(predicted if predicted is not None else "")
-        rewards.append(ACCURACY_REWARD_VALUE if predicted is not None and predicted == gold else 0.0)
+        rewards.append(
+            ACCURACY_REWARD_VALUE
+            if predicted is not None and canonical_gold is not None and predicted == canonical_gold
+            else 0.0
+        )
 
     log_extra = kwargs.get("log_extra")
     if log_extra is not None:

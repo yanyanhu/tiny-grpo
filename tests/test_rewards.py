@@ -9,8 +9,27 @@ from tiny_grpo.rewards import (
     extract_gold_answer,
     extract_predicted_answer,
     format_reward,
+    normalize_numeric_answer,
     to_prompt,
 )
+
+
+class TestNormalizeNumericAnswer:
+    @pytest.mark.parametrize("raw", ["42", "42.0", "042", "42.000", "0042.000"])
+    def test_equivalent_integer_spellings(self, raw):
+        assert normalize_numeric_answer(raw) == "42"
+
+    @pytest.mark.parametrize("raw", ["0", "0.0", "-0", "-0.000"])
+    def test_signed_zero(self, raw):
+        assert normalize_numeric_answer(raw) == "0"
+
+    def test_decimal_commas_and_negative_values(self):
+        assert normalize_numeric_answer("1,234.500") == "1234.5"
+        assert normalize_numeric_answer("-002.500") == "-2.5"
+
+    @pytest.mark.parametrize("raw", ["NaN", "inf", "1e3", "1/2", "about 4", ""])
+    def test_rejects_non_bare_finite_decimal(self, raw):
+        assert normalize_numeric_answer(raw) is None
 
 
 def _completion(text: str):
@@ -75,6 +94,12 @@ class TestAccuracyReward:
         completions = [_completion("<answer>41</answer>")]
         rewards = accuracy_reward(completions=completions, answer=["42"])
         assert rewards == [0.0]
+
+    @pytest.mark.parametrize("prediction", ["42.0", "042", "42.000"])
+    def test_numeric_representation_differences_still_match(self, prediction):
+        completions = [_completion(f"<answer>{prediction}</answer>")]
+        rewards = accuracy_reward(completions=completions, answer=["42"])
+        assert rewards == [ACCURACY_REWARD_VALUE]
 
     def test_missing_tag_is_zero(self):
         completions = [_completion("no tag here")]

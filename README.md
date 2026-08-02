@@ -124,7 +124,9 @@ The model is prompted to end its response with `<answer>final numeric
 answer</answer>`. Two reward functions:
 
 - `accuracy_reward` — 1.0 if the extracted `<answer>` value exactly matches the
-  gold answer (parsed from GSM8K's native `#### <n>` format), else 0.0.
+  gold answer (parsed from GSM8K's native `#### <n>` format), else 0.0. Valid
+  decimal spellings are canonicalized exactly, so representation-only
+  differences such as `42` versus `42.0` do not create false negatives.
 - `format_reward` — 0.2 if the completion has a valid numeric `<answer>` tag at
   all, regardless of correctness, else 0.0.
 
@@ -140,11 +142,30 @@ a separate test split held out from GSM8K's **test** split (reserved for a
 one-time final evaluation once a configuration is chosen — not used during
 iterative training/eval). Indices are persisted per-run in `split_metadata.json`.
 
+## Rollout viability diagnostic (`tiny_grpo/diagnose_rollouts.py`)
+
+Before adding more GRPO steps, measure whether grouped base-model samples
+contain any exact-reward variation:
+
+```sh
+timeout --signal=TERM --kill-after=30s 1200s \
+  uv run python -m tiny_grpo.diagnose_rollouts \
+  --profile debug --hardware cuda_4gb \
+  --num-prompts 16 --num-generations 4 \
+  --command-timeout-seconds 1200
+```
+
+The command performs generation only (no optimizer/backward pass), using the
+versioned `data/diagnostic_manifest_v1.json`. It saves every prompt group and
+reports pass@1, pass@k, sample exact accuracy, formatting/failure categories,
+truncation, within-group reward variance, confidence intervals, runtime, and
+memory in a unique `outputs/diagnostic_*` directory.
+
 ## Evaluation (`tiny_grpo/evaluate.py`)
 
 Baseline (pre-training) and post-training validation against the same
-held-out set, reusing training's exact generation settings (temperature/
-top_p/top_k straight off the resolved `GRPOConfig`) and exact answer-extraction
+held-out set, reusing training's explicit generation settings (temperature/
+top_p/top_k from the resolved typed config) and exact answer-extraction
 logic (`tiny_grpo.rewards`) — never a separate reimplementation that could
 silently drift. Prints a concise before/after comparison and persists both
 passes to the run directory.

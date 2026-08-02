@@ -83,6 +83,14 @@ def test_profile_overrides():
     assert config.num_generations == 4
 
 
+def test_sampling_defaults_are_explicit_and_profile_independent():
+    for hardware in HARDWARE_PROFILES:
+        config = smoke_config(hardware)
+        assert config.temperature == 1.0
+        assert config.top_p == 1.0
+        assert config.top_k == 0
+
+
 def test_invalid_precision_raises():
     with pytest.raises(ConfigError):
         TrainingConfig(run_name="x", hardware_profile_name=MPS_16GB.name, precision="int8")
@@ -186,6 +194,20 @@ def test_zero_max_steps_raises():
 def test_nonpositive_learning_rate_raises():
     with pytest.raises(ConfigError):
         TrainingConfig(run_name="x", hardware_profile_name=MPS_16GB.name, learning_rate=0.0)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"temperature": 0.0},
+        {"top_p": 0.0},
+        {"top_p": 1.1},
+        {"top_k": -1},
+    ],
+)
+def test_invalid_sampling_settings_raise(overrides):
+    with pytest.raises(ConfigError):
+        TrainingConfig(run_name="x", hardware_profile_name=MPS_16GB.name, **overrides)
 
 
 @pytest.mark.parametrize("field_name", ["train_size", "val_size", "test_size"])

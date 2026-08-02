@@ -21,6 +21,34 @@ class SplitSizeError(ValueError):
 
 
 @dataclasses.dataclass(frozen=True)
+class DiagnosticManifest:
+    """Versioned, profile-independent prompt IDs for rollout comparisons."""
+
+    version: int
+    source_dataset: str
+    source_config: str
+    source_split: str
+    seed: int
+    reserved_training_size: int
+    diagnostic_indices: list[int]
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DiagnosticManifest":
+        return cls(
+            version=data["version"],
+            source_dataset=data["source_dataset"],
+            source_config=data["source_config"],
+            source_split=data["source_split"],
+            seed=data["seed"],
+            reserved_training_size=data["reserved_training_size"],
+            diagnostic_indices=list(data["diagnostic_indices"]),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class SplitMetadata:
     seed: int
     train_indices: list[int]
@@ -96,6 +124,44 @@ def build_split_metadata(
     )
 
 
+def build_diagnostic_manifest(
+    train_pool_size: int,
+    *,
+    reserved_training_size: int = 1024,
+    diagnostic_size: int = 200,
+    seed: int = 42,
+) -> DiagnosticManifest:
+    """Build the canonical diagnostic IDs after a reserved training prefix.
+
+    This deliberately does not accept a run profile. The first
+    ``reserved_training_size`` shuffled IDs are held out for current/future
+    training profiles; the following IDs form one stable diagnostic set.
+    """
+    if reserved_training_size + diagnostic_size > train_pool_size:
+        raise SplitSizeError(
+            f"requested reserved/diagnostic sizes {[reserved_training_size, diagnostic_size]} "
+            f"exceed pool size {train_pool_size}"
+        )
+    rng = random.Random(seed)
+    shuffled = list(range(train_pool_size))
+    rng.shuffle(shuffled)
+    reserved = shuffled[:reserved_training_size]
+    # Preserve randomized order so a first-N smoke diagnostic remains a
+    # representative deterministic prefix rather than the numerically lowest
+    # dataset IDs. The full set still matches the longer profile's val set.
+    diagnostic = shuffled[reserved_training_size : reserved_training_size + diagnostic_size]
+    assert_disjoint(reserved, diagnostic)
+    return DiagnosticManifest(
+        version=1,
+        source_dataset="openai/gsm8k",
+        source_config="main",
+        source_split="train",
+        seed=seed,
+        reserved_training_size=reserved_training_size,
+        diagnostic_indices=diagnostic,
+    )
+
+
 def save_split_metadata(path: str | Path, metadata: SplitMetadata) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,6 +170,16 @@ def save_split_metadata(path: str | Path, metadata: SplitMetadata) -> None:
 
 def load_split_metadata(path: str | Path) -> SplitMetadata:
     return SplitMetadata.from_dict(json.loads(Path(path).read_text()))
+
+
+def save_diagnostic_manifest(path: str | Path, manifest: DiagnosticManifest) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest.to_dict(), indent=2) + "\n")
+
+
+def load_diagnostic_manifest(path: str | Path) -> DiagnosticManifest:
+    return DiagnosticManifest.from_dict(json.loads(Path(path).read_text()))
 
 
 def select_split(dataset, indices: list[int]):
