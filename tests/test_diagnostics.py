@@ -2,6 +2,7 @@
 
 import pytest
 
+from tiny_grpo.diagnose_rollouts import chat_template_kwargs
 from tiny_grpo.diagnostics import (
     aggregate_rollout_groups,
     build_prompt_record,
@@ -9,6 +10,17 @@ from tiny_grpo.diagnostics import (
     score_rollout_completion,
     wilson_interval,
 )
+
+
+def test_chat_template_mode_kwargs_are_explicit():
+    assert chat_template_kwargs("default") == {}
+    assert chat_template_kwargs("thinking") == {"enable_thinking": True}
+    assert chat_template_kwargs("non-thinking") == {"enable_thinking": False}
+
+
+def test_chat_template_mode_rejects_unknown_value():
+    with pytest.raises(ValueError, match="unknown chat template mode"):
+        chat_template_kwargs("sometimes")
 
 
 def _score(text: str, gold: str = "42", tokens: int = 5, cap: int = 128) -> dict:

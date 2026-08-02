@@ -32,6 +32,18 @@ from tiny_grpo.splits import load_diagnostic_manifest, select_split
 
 RUN_PROFILES = {"smoke": smoke_config, "debug": debug_config, "longer": longer_config}
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "data" / "diagnostic_manifest_v1.json"
+CHAT_TEMPLATE_MODES = ("default", "thinking", "non-thinking")
+
+
+def chat_template_kwargs(mode: str) -> dict:
+    """Translate the CLI mode into optional tokenizer chat-template kwargs."""
+    if mode == "default":
+        return {}
+    if mode == "thinking":
+        return {"enable_thinking": True}
+    if mode == "non-thinking":
+        return {"enable_thinking": False}
+    raise ValueError(f"unknown chat template mode {mode!r}")
 
 
 def _git_commit() -> str | None:
@@ -86,6 +98,17 @@ def main() -> None:
     parser.add_argument("--num-generations", type=int, default=4)
     parser.add_argument("--max-completion-length", type=int, default=None)
     parser.add_argument("--sampling-seed", type=int, default=42)
+    parser.add_argument(
+        "--model-id",
+        default=None,
+        help="Override the profile's base model for generation-only capability comparison.",
+    )
+    parser.add_argument(
+        "--chat-template-mode",
+        choices=CHAT_TEMPLATE_MODES,
+        default="default",
+        help="Control models such as Qwen3 that expose thinking through their chat template.",
+    )
     parser.add_argument("--adapter-path", type=Path, default=None)
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument(
@@ -109,6 +132,8 @@ def main() -> None:
     device = resolve_device(hardware)
     config = RUN_PROFILES[args.profile](hardware)
     verify_precision_supported(device, config.precision)
+    model_id = args.model_id or config.model_id
+    template_kwargs = chat_template_kwargs(args.chat_template_mode)
 
     max_completion_length = args.max_completion_length or config.max_completion_length
     if max_completion_length < 1:
@@ -138,7 +163,8 @@ def main() -> None:
         "hardware_profile": hardware.name,
         "device": device,
         "precision": config.precision,
-        "model_id": config.model_id,
+        "model_id": model_id,
+        "chat_template_mode": args.chat_template_mode,
         "adapter_path": str(args.adapter_path) if args.adapter_path else None,
         "manifest_path": str(args.manifest),
         "manifest_version": manifest.version,
@@ -187,7 +213,7 @@ def main() -> None:
         model_kwargs = {"device_map": None}
         if dtype is not None:
             model_kwargs["dtype"] = dtype
-        model = AutoModelForCausalLM.from_pretrained(config.model_id, **model_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
         if args.adapter_path is not None:
             from peft import PeftModel
 
@@ -195,7 +221,7 @@ def main() -> None:
         model.to(device)
         model.eval()
 
-        tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         eos_token_ids = {tokenizer.eos_token_id}
@@ -212,7 +238,10 @@ def main() -> None:
         with records_path.open("w") as records_file:
             for position, (prompt_id, example) in enumerate(zip(selected_indices, dataset), start=1):
                 prompt_text = tokenizer.apply_chat_template(
-                    example["prompt"], tokenize=False, add_generation_prompt=True
+                    example["prompt"],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    **template_kwargs,
                 )
                 inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
                 prompt_seed = args.sampling_seed + prompt_id

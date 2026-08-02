@@ -536,6 +536,54 @@ scaling is not justified by this result alone; the next plan should inspect
 task difficulty/target behavior and consider the easy-task curriculum gate in
 Phase 5 before spending another longer training run.
 
+## 2.10 Small-Model Capability Bakeoff (2026-08-02)
+
+Stage 2 evidence indicated a model-capacity bottleneck, so the rollout
+diagnostic gained explicit `--model-id` and `--chat-template-mode` controls.
+This keeps candidate selection generation-only and records Qwen-style thinking
+behavior rather than silently accepting a tokenizer default. All candidates
+used the same manifest prefix, prompts, four samples, per-prompt seeds,
+128-token cap, and sampling parameters.
+
+The 16-prompt candidate gate produced:
+
+| Model | Template mode | pass@4 | Sample exact | Mixed groups | Valid format | Truncation | CUDA max allocated |
+|---|---|---:|---:|---:|---:|---:|---:|
+| SmolLM2-135M-Instruct | default | 6.25% | 1.56% | 6.25% | 40.63% | 46.88% | 316 MiB |
+| Qwen2.5-0.5B-Instruct | default | 6.25% | 1.56% | 6.25% | 6.25% | 73.44% | 1,018 MiB |
+| Qwen3-0.6B | non-thinking | 43.75% | 10.94% | 43.75% | 81.25% | 10.94% | 1,358 MiB |
+
+Qwen2.5 did not pass the small gate under the common experiment settings, so
+it was not expanded. Qwen3-0.6B passed decisively and was evaluated on the
+full canonical 200-prompt manifest in
+`outputs/diagnostic_debug_20260802_213816`.
+
+| Metric | SmolLM2-135M Base | Qwen3-0.6B non-thinking |
+|---|---:|---:|
+| first-sample pass@1 | 0.5% (1/200) | 15.5% (31/200) |
+| pass@4 | 3.5% (7/200) | 38.0% (76/200) |
+| sample exact accuracy | 1.0% (8/800) | 16.63% (133/800) |
+| mixed exact-reward groups | 3.5% (7/200) | 36.0% (72/200) |
+| zero exact-reward-std groups | 96.5% | 64.0% |
+| valid format | 42.25% | 87.38% |
+| truncation | 42.13% | 6.88% |
+| runtime | 734.0 s | 648.8 s |
+| CUDA maximum allocated | 320 MiB | 1,382 MiB |
+| CUDA reserved | 350 MiB | 1,424 MiB |
+
+Qwen3 confidence intervals were pass@1 11.14–21.16%, pass@4 31.56–44.89%,
+sample exact accuracy 14.21–19.36%, and mixed groups 29.67–42.86%. These are
+well separated from the corresponding SmolLM2 intervals. Qwen3 therefore
+passes the base-model capability gate and provides repeated exact-reward
+variation suitable for GRPO. Generation memory also leaves substantial room
+within 4 GiB, but training feasibility must still be measured independently.
+
+Recommended next action: add Qwen3-0.6B as an explicit model profile with
+non-thinking chat-template behavior, verify its LoRA target modules and
+completion-only SFT formatting, and run only an SFT/GRPO memory smoke before
+choosing whether a warm-start is needed. Do not infer backward-pass memory from
+the successful generation diagnostic.
+
 ---
 
 # Phase 3 — Continue the SFT Adapter with Exact-Reward GRPO

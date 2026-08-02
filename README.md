@@ -180,6 +180,13 @@ timeout --signal=TERM --kill-after=30s 1200s \
   --command-timeout-seconds 1200
 ```
 
+Use `--model-id <hub-id>` for a generation-only model capability comparison.
+Models such as Qwen3 that expose reasoning behavior through their chat template
+can be controlled explicitly with `--chat-template-mode thinking` or
+`--chat-template-mode non-thinking`; the selected mode is persisted in the
+diagnostic config. Omit both flags to preserve the project model and its native
+chat-template behavior.
+
 The command performs generation only (no optimizer/backward pass), using the
 versioned `data/diagnostic_manifest_v1.json`. It saves every prompt group and
 reports pass@1, pass@k, sample exact accuracy, formatting/failure categories,
