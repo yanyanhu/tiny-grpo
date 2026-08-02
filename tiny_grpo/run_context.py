@@ -13,13 +13,20 @@ import json
 import platform
 import sys
 from pathlib import Path
+from typing import Protocol
 
-from tiny_grpo.config import TrainingConfig
 from tiny_grpo.splits import SplitMetadata, save_split_metadata
 
 PACKAGES_TO_PIN = ["torch", "transformers", "trl", "accelerate", "datasets", "peft"]
 
 RunStatus = str  # "running" | "completed" | "failed"
+
+
+class RunConfig(Protocol):
+    """Metadata fields shared by the GRPO and SFT config dataclasses."""
+
+    run_name: str
+    hardware_profile_name: str
 
 
 def make_run_dir(output_root: str | Path, run_name: str, now: datetime.datetime | None = None) -> Path:
@@ -100,7 +107,7 @@ def update_run_status(run_dir: str | Path, status: RunStatus) -> None:
 
 def save_run_metadata(
     run_dir: str | Path,
-    config: TrainingConfig,
+    config: RunConfig,
     split_metadata: SplitMetadata,
     *,
     verification_run: bool,

@@ -271,10 +271,10 @@ The SFT stage should be small, explicit, and integrated into the existing projec
 
 ## 2.1 Add an SFT Training Entry Point
 
-Add a command such as:
+Use:
 
 ```bash
-python -m tiny_grpo.train_sft \
+uv run python train_sft.py \
   --profile debug \
   --hardware cuda_4gb
 ```
@@ -399,6 +399,142 @@ The SFT stage is ready to hand off to GRPO when:
 - mixed exact-reward groups occur repeatedly rather than as one isolated lucky hit;
 - the rollout diagnostic can run from the SFT adapter;
 - all measurements use the same validation manifest and sampling settings.
+
+## 2.7 Implementation and Smoke Evidence (2026-08-02)
+
+Stage 2 mechanics are implemented in `train_sft.py`, `tiny_grpo/sft_config.py`,
+and `tiny_grpo/sft_data.py`. The implementation uses the installed TRL
+`SFTTrainer` prompt/completion path with `completion_only_loss=True`. The
+SmolLM2 chat template does not expose assistant-token generation masks, so
+`assistant_only_loss` is deliberately disabled rather than claimed active;
+completion-only masking supervises the assistant completion and masks the
+prompt.
+
+Implemented behavior:
+
+- `sft_smoke` and `sft_debug` profiles composed with both hardware profiles;
+- deterministic existing GSM8K splits and current prompt format;
+- gold reasoning targets ending in one canonical answer tag;
+- calculator annotation removal and no gold answer in the user prompt;
+- preflight refusal if any supervised sequence exceeds `max_sequence_length`;
+- LoRA-only training, JSONL/memory logging, baseline/post evaluation;
+- rolling checkpoint retention capped at two, resume support, and a separately
+  retained final adapter.
+
+Verification results:
+
+- final full tests: 216 passed, 7 hardware-dependent skips in the restricted process;
+- real RTX 3050 CUDA integration: 3 passed;
+- corrected focused SFT tests: 19 passed;
+- successful run: `outputs/sft_smoke_20260802_190238`;
+- config: 64 train, 16 validation, batch size 1, accumulation 8, BF16,
+  gradient checkpointing, sequence length 1024, learning rate `2e-4`, 3 steps;
+- audited train length: 315–543 tokens; validation: 336–475; zero over limit;
+- logged CUDA memory: about 284 MiB allocated after steps, with a 527 MiB
+  maximum-allocation watermark and 564 MiB reserved;
+- checkpoints retained: `checkpoint-2` and `checkpoint-3`; final adapter saved;
+- independent fresh-process base-model plus adapter reload and held-out
+  generation succeeded.
+
+The 16-example smoke generation comparison changed valid-format rate from
+18.8% to 50.0%, but exact accuracy remained 0% before and after. This is not
+evidence of a quality improvement: three optimizer steps and 16 examples are
+only a mechanical smoke test. Phase 2 has therefore passed its implementation
+and memory-safety gate, but not its quality/handoff criteria. The next planned
+experiment is the explicit `sft_debug` run, followed by the fixed-manifest
+rollout diagnostic from its adapter and a Base-versus-SFT comparison.
+
+## 2.8 SFT Debug Evidence (2026-08-02)
+
+The first deliberate SFT debug experiment completed successfully:
+
+- run: `outputs/sft_debug_20260802_201146`;
+- 256 training examples, 32 validation examples, one effective epoch;
+- batch size 1, gradient accumulation 8, BF16, gradient checkpointing;
+- sequence length 1024, learning rate `2e-4`, 32 optimizer steps;
+- training runtime: 91.8 seconds;
+- final aggregate training loss: 1.019;
+- validation loss by checkpoint: 1.017, 0.992, 0.979, 0.976;
+- all audited sequences fit: train 307–558 tokens and validation 300–531;
+- CUDA maximum-allocation watermark: about 530 MiB; maximum reserved: 568 MiB;
+- retained checkpoints: `checkpoint-24` and `checkpoint-32`;
+- final adapter saved successfully.
+
+On the run's 32-example, one-sample generation evaluation, exact accuracy
+changed from 0/32 to 1/32 (3.1%), format rate from 40.6% to 46.9%, and parse
+failure rate from 59.4% to 53.1%. This isolated exact hit was then checked with
+the canonical first 16 prompts × 4 samples in
+`outputs/diagnostic_debug_20260802_204641`.
+
+Fixed-manifest comparison at 128 completion tokens:
+
+| Metric | Base | SFT debug |
+|---|---:|---:|
+| pass@1 | 0.0% | 0.0% |
+| pass@4 | 6.25% | 6.25% |
+| sample exact accuracy | 1.56% | 1.56% |
+| mixed exact-reward groups | 6.25% | 6.25% |
+| zero exact-reward-std groups | 93.75% | 93.75% |
+| valid format | 40.63% | 34.38% |
+| truncation | 46.88% | 48.44% |
+
+Therefore this 256-example, one-epoch adapter passes the implementation and
+memory gates but does not pass the Phase 2 quality/handoff gate. The one exact
+validation hit is not corroborated by improved fixed-manifest pass@4 or mixed
+groups. Do not start Phase 3 GRPO from this adapter as the recommended next
+experiment. Increase SFT exposure conservatively (prefer a larger deterministic
+subset and/or more than one epoch), run smoke-level memory verification for the
+chosen profile, and repeat the identical fixed-manifest diagnostic before the
+GRPO handoff decision.
+
+## 2.9 Stronger SFT Evidence (2026-08-02)
+
+A distinct `sft_stronger` profile was added so this experiment is reproducible
+without ad-hoc overrides. It computes optimizer steps from each hardware
+profile's effective batch, giving both CUDA and MPS two effective epochs over
+the same reserved training set. The CUDA experiment used:
+
+- run: `outputs/sft_stronger_20260802_205646`;
+- 1,024 training examples and 64 validation examples;
+- two effective epochs, 256 optimizer steps;
+- batch size 1, gradient accumulation 8, BF16, gradient checkpointing;
+- sequence length 1,024 and learning rate `2e-4` with linear decay;
+- evaluation/checkpoint cadence every 64 steps and two-checkpoint retention;
+- training runtime: 662.9 seconds;
+- aggregate training loss: 0.942;
+- validation loss: 0.915, 0.893, 0.887, 0.882;
+- audited train length 292–663 tokens and validation 306–559, zero over limit;
+- CUDA maximum-allocation watermark about 534 MiB and maximum reserved 626 MiB;
+- retained checkpoints: `checkpoint-192` and `checkpoint-256`;
+- final adapter saved successfully.
+
+The 64-prompt single-sample generation comparison did not improve exact
+accuracy: Base scored 1/64 (1.6%) and the stronger adapter 0/64. Format rate
+improved from 45.3% to 56.3%, parse failures fell from 54.7% to 43.8%, and mean
+reward changed from 0.106 to 0.113.
+
+The canonical 16-prompt × 4-sample diagnostic is stored at
+`outputs/diagnostic_debug_20260802_211819`:
+
+| Metric | Base | SFT debug | SFT stronger |
+|---|---:|---:|---:|
+| pass@1 | 0.0% | 0.0% | 0.0% |
+| pass@4 | 6.25% | 6.25% | 0.0% |
+| sample exact accuracy | 1.56% | 1.56% | 0.0% |
+| mixed exact-reward groups | 6.25% | 6.25% | 0.0% |
+| zero exact-reward-std groups | 93.75% | 93.75% | 100.0% |
+| valid format | 40.63% | 34.38% | 59.38% |
+| truncation | 46.88% | 48.44% | 37.50% |
+
+The stronger SFT profile clearly improves format compliance and reduces
+truncation, and its supervised validation loss improves consistently. It does
+not improve exact arithmetic capability on the fixed diagnostic, however: all
+38 valid-format completions were incorrect and no GRPO group had exact-reward
+variance. Phase 2's quality/handoff gate therefore still fails, and Phase 3
+exact-reward GRPO should not start from this adapter. Further undirected SFT
+scaling is not justified by this result alone; the next plan should inspect
+task difficulty/target behavior and consider the easy-task curriculum gate in
+Phase 5 before spending another longer training run.
 
 ---
 

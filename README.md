@@ -18,6 +18,28 @@ uv run python train_grpo.py --profile smoke --hardware mps_16gb
   verification.
 - `--hardware`: required, `mps_16gb` or `cuda_4gb`.
 
+### SFT warm-start
+
+Stage 2 provides a separate LoRA SFT path before further exact-reward GRPO:
+
+```sh
+uv run python train_sft.py --profile smoke --hardware cuda_4gb
+```
+
+SFT profiles are `smoke` (3-step end-to-end verification), `debug` (one epoch
+over 256 examples), and `stronger` (two effective epochs over the reserved
+1,024-example train set). All use deterministic GSM8K splits,
+completion-only loss so prompt tokens are masked, a hard two-checkpoint cap,
+baseline/post-training generation evaluation, and the same metadata/resume
+conventions as GRPO. SFT targets preserve gold reasoning, remove GSM8K's
+calculator annotations, and end with exactly one canonical
+`<answer>NUMBER</answer>` line. The preflight length audit refuses to train if
+an answer would be silently truncated.
+
+The smoke profile verifies mechanics and memory only; it is too short to
+support an accuracy claim. Start `--profile debug` deliberately after
+reviewing smoke artifacts.
+
 To run in the background with a watchdog that kills the process if it hangs
 or runs too long:
 
@@ -59,6 +81,7 @@ Each run directory contains:
   (`mps_memory_mb` or `cuda_memory_mb`, whichever is active).
 - `completions/completions_*.parquet` — sampled (prompt, completion, reward
   breakdown, extracted answer, gold answer, advantage) rows per logging step.
+  GRPO only; SFT does not produce rollout-completion logs.
 - `eval_baseline.json` / `eval_post_training.json` — accuracy, format rate,
   parse-failure rate, mean reward, mean completion length, runtime, memory,
   and sample completions, before and after training, against the same
@@ -69,6 +92,8 @@ Each run directory contains:
   most recent per run (`checkpoint_retention` in config, hard-capped at 2).
 - `final_adapter/` — the final trained LoRA adapter, kept independent of the
   2-checkpoint rolling cap.
+- `sft_data_stats.json` — SFT-only token-length audit for train and validation,
+  including the count over the configured sequence limit (required to be zero).
 - `tensorboard/` — `tensorboard --logdir outputs/<run>/tensorboard` for charts.
 
 While training runs, a single throttled console line shows step/elapsed/ETA/

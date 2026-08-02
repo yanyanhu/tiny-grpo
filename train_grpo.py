@@ -9,12 +9,10 @@ import ast
 import dataclasses
 import json
 import os
-import sys
-import time
 from pathlib import Path
 
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
 from tiny_grpo.config import ResumeConfig, TrainingConfig, debug_config, longer_config, smoke_config
@@ -27,86 +25,13 @@ from tiny_grpo.hardware import (
     verify_precision_supported,
 )
 from tiny_grpo.lora import to_peft_lora_config
-from tiny_grpo.monitoring import device_memory_mb, process_memory_mb
 from tiny_grpo.resume import resolve_resume_target
 from tiny_grpo.rewards import accuracy_reward, format_reward, to_prompt
 from tiny_grpo.run_context import make_run_dir, save_run_metadata, update_run_status
 from tiny_grpo.splits import build_split_metadata, select_split
+from tiny_grpo.trainer_callbacks import ConsoleProgressCallback, JsonlLoggerCallback
 
 RUN_PROFILES = {"smoke": smoke_config, "debug": debug_config, "longer": longer_config}
-
-
-class JsonlLoggerCallback(TrainerCallback):
-    """Appends every trainer.log() call, plus memory stats, to a JSONL file.
-
-    This is the detailed source of truth. Nothing should parse console output
-    instead of this file.
-    """
-
-    def __init__(self, path, device: str):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.device = device
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs is None:
-            return
-        record = {"step": state.global_step, **logs, "process_memory_mb": process_memory_mb()}
-        device_mem = device_memory_mb(self.device)
-        if device_mem is not None:
-            record[f"{self.device}_memory_mb"] = device_mem
-        with self.path.open("a") as f:
-            f.write(json.dumps(record) + "\n")
-
-
-class ConsoleProgressCallback(TrainerCallback):
-    """Throttled, single-line, human-readable progress update at logging_steps.
-
-    A derived view for live monitoring only — not a logging path, and nothing
-    downstream should parse it. Falls back to plain newline-terminated lines
-    when stdout isn't a tty (piped output, gtimeout, CI).
-    """
-
-    def __init__(self, device: str):
-        self._start_time = None
-        self._is_tty = sys.stdout.isatty()
-        self.device = device
-
-    def on_train_begin(self, args, state, control, **kwargs):
-        self._start_time = time.monotonic()
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs is None or self._start_time is None:
-            return
-        # Eval logs carry "eval_"-prefixed keys; keep this line about live
-        # training progress and let eval metrics live in the JSONL only.
-        if any(key.startswith("eval_") for key in logs):
-            return
-
-        elapsed = time.monotonic() - self._start_time
-        step = state.global_step
-        max_steps = state.max_steps or 0
-        eta = (elapsed / step) * (max_steps - step) if 0 < step < max_steps else 0.0
-
-        loss = logs.get("loss", float("nan"))
-        reward = logs.get("reward", float("nan"))
-        accuracy = logs.get("rewards/accuracy_reward/mean", float("nan"))
-        fmt = logs.get("rewards/format_reward/mean", float("nan"))
-        mem_mb = process_memory_mb()
-        device_mem = device_memory_mb(self.device)
-        device_suffix = f" {self.device} {device_mem['allocated_mb']:.0f}MB" if device_mem else ""
-
-        line = (
-            f"step {step}/{max_steps} | elapsed {elapsed:.0f}s | eta {eta:.0f}s | "
-            f"loss {loss:.4f} | reward {reward:.3f} (acc {accuracy:.3f} fmt {fmt:.3f}) | "
-            f"mem {mem_mb:.0f}MB{device_suffix}"
-        )
-
-        if self._is_tty:
-            sys.stdout.write("\r" + line.ljust(120))
-            sys.stdout.flush()
-        else:
-            print(line, flush=True)
 
 
 def build_datasets(config: TrainingConfig):
