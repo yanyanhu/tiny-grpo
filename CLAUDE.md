@@ -22,6 +22,10 @@ Full docs:
   agnostic. Read this before starting substantive work.
 - **`docs/SPEC_MACOS_MPS.md`** — concrete settings/config for the M2 16GB profile.
 - **`docs/SPEC_CUDA_4GB.md`** — concrete settings/config for the RTX 3050 4GB profile.
+- **`docs/ACCURACY_IMPROVEMENT_PLAN.md`** — full methodology, raw numbers, and
+  experiment history behind the `accuracy_reward` diagnosis; see
+  `docs/PROJECT_SPEC.md`'s "Accuracy-Reward Constraints" section for the summary
+  and what's sanctioned as a next step.
 
 Read the profile doc that matches the machine you're actually running on
 before touching config defaults — the two profiles are not interchangeable
@@ -30,7 +34,11 @@ dedicated VRAM).
 
 ## Stack (same across both profiles)
 
-- Model: `HuggingFaceTB/SmolLM2-135M-Instruct`
+- Model: `HuggingFaceTB/SmolLM2-135M-Instruct` (current default — a
+  model-capacity ceiling has since been diagnosed for `accuracy_reward` at
+  this scale; see "Known, expected (not bugs)" below and
+  `docs/PROJECT_SPEC.md`'s "Accuracy-Reward Constraints" before assuming this
+  stays fixed)
 - Dataset: `openai/gsm8k`
 - Trainer: TRL `GRPOTrainer` + LoRA
 - Rollout: standard Transformers generation (vLLM disabled on both profiles —
@@ -110,6 +118,19 @@ SPEC docs. Do not assume MPS defaults are safe on CUDA or vice versa.
   is a real possibility if any single setting is increased without adjusting
   another (see `docs/SPEC_CUDA_4GB.md`). This is a profile characteristic to
   design around, not a bug to "fix" by quietly upsizing the GPU assumption.
+- `accuracy_reward` staying near zero on `SmolLM2-135M-Instruct` is now a
+  diagnosed model-capacity limitation, not a bug in reward/training logic.
+  Rollout diagnostics on the fixed 200-prompt canonical manifest
+  (`data/diagnostic_manifest_v1.json`) show only ~3.5% of groups have any
+  reward variance to learn from; SFT warm-start at three escalating
+  strengths didn't fix it (and regressed pass@4 to 0% at the strongest
+  setting); a capability bakeoff shows `Qwen3-0.6B-Instruct` (non-thinking
+  mode) dramatically outperforms SmolLM2 on the identical manifest. See
+  `docs/PROJECT_SPEC.md`'s "Accuracy-Reward Constraints" and
+  `docs/ACCURACY_IMPROVEMENT_PLAN.md` for full evidence. Evaluating a
+  larger-model swap is now a sanctioned, evidence-gated next step (see
+  `docs/PROJECT_SPEC.md`'s "Current Milestone" exception) — not the blanket
+  "no larger model" this project started with.
 
 ## See also
 

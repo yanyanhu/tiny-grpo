@@ -34,7 +34,11 @@ Use the following unless a documented compatibility issue requires a change.
 Items marked **(profile-specific)** have concrete values defined per hardware
 profile, not here — this section only fixes what's constant across profiles.
 
-- Model: `HuggingFaceTB/SmolLM2-135M-Instruct`
+- Model: `HuggingFaceTB/SmolLM2-135M-Instruct` (current default — a
+  model-capacity ceiling has since been diagnosed for `accuracy_reward` at
+  this scale; see "Accuracy-Reward Constraints" below and
+  `docs/ACCURACY_IMPROVEMENT_PLAN.md` before assuming this stays
+  fixed)
 - Dataset: `openai/gsm8k`
 - Trainer: Hugging Face TRL `GRPOTrainer`
 - Adaptation: LoRA
@@ -76,6 +80,12 @@ either profile. This is expected tiny-model behavior. Do not spend debugging
 time trying to "fix" this unless format/parse failure rates fail to improve
 at all over the course of training.
 
+For the specific diagnosis and experiment history behind low exact-answer
+accuracy *after* format compliance was fixed, see "Accuracy-Reward
+Constraints" below and `docs/ACCURACY_IMPROVEMENT_PLAN.md` — that is a
+separate, since-diagnosed issue from the format/parse problem this paragraph
+describes.
+
 ## Training Objective
 
 For each GSM8K prompt:
@@ -103,6 +113,31 @@ Use two initial reward functions:
 - 0.0 otherwise.
 
 Keep reward logic independently testable, and identical across both hardware profiles.
+
+## Accuracy-Reward Constraints
+
+Two corrections to the reward/prompt logic, made after diagnosing why
+`accuracy_reward` stayed near zero, are load-bearing and must not be
+reverted:
+- Numeric answer comparison must use exact `Decimal`-based canonicalization
+  (`tiny_grpo/rewards.py::normalize_numeric_answer`), not string/float
+  comparison — `"42"`, `"42.0"`, `"042"`, and `"42.000"` must all normalize
+  equal. Reverting to naive string comparison reintroduces false-negative
+  accuracy rewards.
+- The system prompt and few-shot examples must keep the stronger,
+  instruction-following phrasing that fixed an earlier format-compliance
+  bottleneck (the model wasn't emitting a parseable `<answer>` tag at all).
+  That was an instruction-following limitation, not a token-length one — do
+  not try to re-fix it by raising `max_completion_length` instead.
+
+Beyond those two fixes, whether `SmolLM2-135M-Instruct` can support
+meaningful `accuracy_reward` learning at all is a diagnosed, evidence-gated
+open question, not something to assume away. The full diagnostic
+methodology, raw numbers, and confidence intervals — rollout-variance
+diagnostics, the SFT warm-start experiments (all three strengths, a
+documented negative result), and the small-model capability bakeoff — live
+in `docs/ACCURACY_IMPROVEMENT_PLAN.md`. See the "Current Milestone"
+exception below for what that evidence currently sanctions as a next step.
 
 ## Development Principles
 
@@ -482,10 +517,24 @@ Implement the following:
 
 Do not yet:
 - launch a multi-hour run;
-- add a larger model;
 - add external experiment tracking;
 - add distributed infrastructure;
 - add medical-safety data or rewards.
+
+**"Add a larger model" is no longer a blanket "never."** The
+accuracy-improvement diagnosis (see "Accuracy-Reward Constraints" above and
+`docs/ACCURACY_IMPROVEMENT_PLAN.md`) found a model-capacity ceiling, and the
+capability bakeoff gives evidence-based grounds to evaluate a swap. It
+remains gated, not casual:
+- do not switch the default model in place — add any candidate (e.g.
+  `Qwen3-0.6B-Instruct`) as an explicit, config-selectable model profile;
+- do not adopt it before a real, timeout-protected smoke run verifies
+  LoRA+GRPO **training-time** memory feasibility on `cuda_4gb` (generation-time
+  headroom, already measured, is not sufficient evidence on its own);
+- verify its LoRA target module names before assuming they match
+  `q_proj`/`k_proj`/`v_proj`/`o_proj`;
+- document the swap (or the decision not to make it) the same way every
+  other deviation in this project is documented, rather than by drift.
 
 ## Completion Criteria
 
