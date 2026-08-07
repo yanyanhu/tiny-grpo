@@ -1,7 +1,8 @@
 """GRPO training entrypoint: wires config, dataset splits, and reward logic together.
 
 Usage:
-    uv run python train_grpo.py --profile {smoke,debug,longer} --hardware {mps_16gb,cuda_4gb}
+    uv run python train_grpo.py --profile {smoke,debug,longer} \
+        --hardware {mps_16gb,cuda_4gb} --model-profile {smollm2_135m,qwen3_0_6b}
 """
 
 import argparse
@@ -25,6 +26,7 @@ from tiny_grpo.hardware import (
     verify_precision_supported,
 )
 from tiny_grpo.lora import to_peft_lora_config
+from tiny_grpo.model_profiles import MODEL_PROFILES, resolve_model_profile
 from tiny_grpo.resume import resolve_resume_target
 from tiny_grpo.rewards import accuracy_reward, format_reward, to_prompt
 from tiny_grpo.run_context import make_run_dir, save_run_metadata, update_run_status
@@ -90,6 +92,7 @@ def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
         temperature=config.temperature,
         top_p=config.top_p,
         top_k=config.top_k,
+        chat_template_kwargs=config.chat_template_kwargs,
         beta=config.beta,
         learning_rate=config.learning_rate,
         logging_steps=config.logging_steps,
@@ -138,6 +141,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=sorted(RUN_PROFILES), default="smoke")
     parser.add_argument("--hardware", choices=sorted(HARDWARE_PROFILES), required=True)
+    parser.add_argument("--model-profile", choices=sorted(MODEL_PROFILES), default="smollm2_135m")
     parser.add_argument(
         "--verification-run",
         action=argparse.BooleanOptionalAction,
@@ -172,7 +176,8 @@ def main():
     device = resolve_device(hardware)  # raises DeviceUnavailableError if this machine lacks it
     verification_run = args.verification_run if args.verification_run is not None else (args.profile == "smoke")
 
-    config = RUN_PROFILES[args.profile](hardware)
+    model_profile = resolve_model_profile(args.model_profile)
+    config = RUN_PROFILES[args.profile](hardware, model_profile=model_profile)
     config = dataclasses.replace(config, resume=ResumeConfig(mode=args.resume))
     for item in args.set:
         field, _, raw_value = item.partition("=")
@@ -227,6 +232,7 @@ def main():
         top_p=grpo_config.top_p,
         top_k=grpo_config.top_k,
         seed=config.seed,
+        chat_template_kwargs=config.chat_template_kwargs,
     )
 
     try:

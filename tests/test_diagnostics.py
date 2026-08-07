@@ -2,7 +2,6 @@
 
 import pytest
 
-from tiny_grpo.diagnose_rollouts import chat_template_kwargs
 from tiny_grpo.diagnostics import (
     aggregate_rollout_groups,
     build_prompt_record,
@@ -10,6 +9,7 @@ from tiny_grpo.diagnostics import (
     score_rollout_completion,
     wilson_interval,
 )
+from tiny_grpo.model_profiles import chat_template_kwargs
 
 
 def test_chat_template_mode_kwargs_are_explicit():

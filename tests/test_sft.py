@@ -5,6 +5,7 @@ import dataclasses
 import pytest
 
 from tiny_grpo.hardware import CUDA_4GB, MPS_16GB
+from tiny_grpo.model_profiles import QWEN3_0_6B
 from tiny_grpo.sft_config import (
     SFTConfigError,
     sft_debug_config,
@@ -27,6 +28,17 @@ def test_sft_profiles_validate_on_both_hardware(factory, hardware):
 def test_cuda_sft_requires_gradient_checkpointing():
     with pytest.raises(SFTConfigError):
         dataclasses.replace(sft_smoke_config(CUDA_4GB), gradient_checkpointing=False)
+
+
+def test_qwen_sft_profile_preserves_non_thinking_template_kwargs():
+    config = sft_smoke_config(CUDA_4GB, model_profile=QWEN3_0_6B)
+    assert config.run_name == "sft_smoke_qwen3_0_6b"
+    assert config.chat_template_kwargs == {"enable_thinking": False}
+    mapped = to_sft_example(
+        {"question": "What is 1 + 1?", "answer": "Add.\n#### 2"},
+        chat_template_kwargs=config.chat_template_kwargs,
+    )
+    assert mapped["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_sft_rejects_device_that_does_not_match_hardware_profile():

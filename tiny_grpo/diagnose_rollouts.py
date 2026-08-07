@@ -26,6 +26,7 @@ from tiny_grpo.hardware import (
     verify_precision_supported,
 )
 from tiny_grpo.monitoring import device_memory_mb, process_memory_mb
+from tiny_grpo.model_profiles import chat_template_kwargs
 from tiny_grpo.rewards import to_prompt
 from tiny_grpo.run_context import RunTags, collect_environment_info, make_run_dir, save_run_tags, update_run_status
 from tiny_grpo.splits import load_diagnostic_manifest, select_split
@@ -33,17 +34,6 @@ from tiny_grpo.splits import load_diagnostic_manifest, select_split
 RUN_PROFILES = {"smoke": smoke_config, "debug": debug_config, "longer": longer_config}
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "data" / "diagnostic_manifest_v1.json"
 CHAT_TEMPLATE_MODES = ("default", "thinking", "non-thinking")
-
-
-def chat_template_kwargs(mode: str) -> dict:
-    """Translate the CLI mode into optional tokenizer chat-template kwargs."""
-    if mode == "default":
-        return {}
-    if mode == "thinking":
-        return {"enable_thinking": True}
-    if mode == "non-thinking":
-        return {"enable_thinking": False}
-    raise ValueError(f"unknown chat template mode {mode!r}")
 
 
 def _git_commit() -> str | None:

@@ -1,6 +1,7 @@
 """SFT warm-start entrypoint for the tiny GRPO project.
 
-Usage: uv run python train_sft.py --profile {smoke,debug,stronger} --hardware {mps_16gb,cuda_4gb}
+Usage: uv run python train_sft.py --profile {smoke,debug,stronger} \
+    --hardware {mps_16gb,cuda_4gb} --model-profile {smollm2_135m,qwen3_0_6b}
 """
 
 import argparse
@@ -24,6 +25,7 @@ from tiny_grpo.hardware import (
     verify_precision_supported,
 )
 from tiny_grpo.lora import to_peft_lora_config
+from tiny_grpo.model_profiles import MODEL_PROFILES, resolve_model_profile
 from tiny_grpo.resume import resolve_resume_target
 from tiny_grpo.rewards import to_prompt
 from tiny_grpo.run_context import make_run_dir, save_run_metadata, update_run_status
@@ -57,8 +59,19 @@ def build_datasets(config: SFTTrainingConfig):
     )
     train_rows = select_split(train_pool, metadata.train_indices)
     val_rows = select_split(train_pool, metadata.val_indices)
-    train = train_rows.map(to_sft_example, remove_columns=train_pool.column_names, load_from_cache_file=False)
-    validation = val_rows.map(to_sft_example, remove_columns=train_pool.column_names, load_from_cache_file=False)
+    map_kwargs = {"chat_template_kwargs": config.chat_template_kwargs}
+    train = train_rows.map(
+        to_sft_example,
+        fn_kwargs=map_kwargs,
+        remove_columns=train_pool.column_names,
+        load_from_cache_file=False,
+    )
+    validation = val_rows.map(
+        to_sft_example,
+        fn_kwargs=map_kwargs,
+        remove_columns=train_pool.column_names,
+        load_from_cache_file=False,
+    )
     generation_validation = val_rows.map(
         to_prompt, remove_columns=train_pool.column_names, load_from_cache_file=False
     )
@@ -116,6 +129,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=sorted(RUN_PROFILES), default="smoke")
     parser.add_argument("--hardware", choices=sorted(HARDWARE_PROFILES), required=True)
+    parser.add_argument("--model-profile", choices=sorted(MODEL_PROFILES), default="smollm2_135m")
     parser.add_argument("--verification-run", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--resume", default="none")
     parser.add_argument("--allow-cross-profile-resume", action="store_true")
@@ -125,7 +139,11 @@ def main() -> None:
     hardware = resolve_hardware_profile(args.hardware)
     device = resolve_device(hardware)
     verification = args.verification_run if args.verification_run is not None else args.profile == "smoke"
-    config = dataclasses.replace(RUN_PROFILES[args.profile](hardware), resume=ResumeConfig(mode=args.resume))
+    model_profile = resolve_model_profile(args.model_profile)
+    config = dataclasses.replace(
+        RUN_PROFILES[args.profile](hardware, model_profile=model_profile),
+        resume=ResumeConfig(mode=args.resume),
+    )
     for item in args.set:
         field, separator, raw = item.partition("=")
         if not separator:
@@ -172,6 +190,7 @@ def main() -> None:
         top_p=config.top_p,
         top_k=config.top_k,
         seed=config.seed,
+        chat_template_kwargs=config.chat_template_kwargs,
     )
 
     try:

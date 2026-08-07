@@ -69,6 +69,7 @@ def evaluate_model(
     top_p: float,
     top_k: int,
     seed: int,
+    chat_template_kwargs: dict | None = None,
     num_samples_to_keep: int = 4,
 ) -> dict:
     """Generate + score every example in `dataset`, one at a time (small
@@ -79,6 +80,7 @@ def evaluate_model(
     import torch
 
     torch.manual_seed(seed)
+    chat_template_kwargs = chat_template_kwargs or {}
 
     was_training = model.training
     model.eval()
@@ -88,7 +90,10 @@ def evaluate_model(
     try:
         for example in dataset:
             prompt_text = tokenizer.apply_chat_template(
-                example["prompt"], tokenize=False, add_generation_prompt=True
+                example["prompt"],
+                tokenize=False,
+                add_generation_prompt=True,
+                **chat_template_kwargs,
             )
             inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
             with torch.no_grad():

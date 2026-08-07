@@ -525,16 +525,26 @@ Do not yet:
 accuracy-improvement diagnosis (see "Accuracy-Reward Constraints" above and
 `docs/ACCURACY_IMPROVEMENT_PLAN.md`) found a model-capacity ceiling, and the
 capability bakeoff gives evidence-based grounds to evaluate a swap. It
-remains gated, not casual:
+remains explicit, not casual. The Qwen3 gate was completed on 2026-08-07:
 - do not switch the default model in place — add any candidate (e.g.
   `Qwen3-0.6B-Instruct`) as an explicit, config-selectable model profile;
-- do not adopt it before a real, timeout-protected smoke run verifies
-  LoRA+GRPO **training-time** memory feasibility on `cuda_4gb` (generation-time
-  headroom, already measured, is not sufficient evidence on its own);
+- `qwen3_0_6b` is now an explicit profile; SmolLM2 remains the default;
+- a real timeout-protected LoRA+GRPO step on `cuda_4gb` completed with four
+  generations, `beta=0.04`, gradient checkpointing, and 2,809 MiB maximum CUDA
+  memory allocated, so training-time feasibility is established for the smoke
+  configuration;
 - verify its LoRA target module names before assuming they match
   `q_proj`/`k_proj`/`v_proj`/`o_proj`;
+- those four targets were verified against the loaded Qwen3 model before the
+  smoke runs;
 - document the swap (or the decision not to make it) the same way every
   other deviation in this project is documented, rather than by drift.
+
+The next model-quality experiment should use base Qwen3 non-thinking with
+direct exact-reward GRPO. Its canonical rollout diagnostic already has healthy
+mixed exact-reward groups, so SFT is not needed as a bootstrap prerequisite.
+The successful three-step Qwen3 SFT run is memory evidence only, not evidence
+that SFT improves model quality.
 
 ## Completion Criteria
 

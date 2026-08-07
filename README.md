@@ -187,6 +187,23 @@ can be controlled explicitly with `--chat-template-mode thinking` or
 diagnostic config. Omit both flags to preserve the project model and its native
 chat-template behavior.
 
+Training uses typed model profiles so the model ID, chat-template behavior, and
+LoRA targets cannot drift independently. SmolLM2 remains the default. Select the
+verified Qwen3 non-thinking profile explicitly for either training stage:
+
+```sh
+timeout --signal=TERM --kill-after=30s 1800s \
+  uv run python -u train_sft.py \
+  --profile smoke --hardware cuda_4gb --model-profile qwen3_0_6b
+
+timeout --signal=TERM --kill-after=30s 1800s \
+  uv run python -u train_grpo.py \
+  --profile smoke --hardware cuda_4gb --model-profile qwen3_0_6b
+```
+
+Non-default model profiles add their name to the run directory, preventing a
+resume from silently crossing model families.
+
 The command performs generation only (no optimizer/backward pass), using the
 versioned `data/diagnostic_manifest_v1.json`. It saves every prompt group and
 reports pass@1, pass@k, sample exact accuracy, formatting/failure categories,
@@ -207,8 +224,9 @@ passes to the run directory.
 A `TrainingConfig` is a **run profile** (`smoke_config()` / `debug_config()` /
 `longer_config()` — training length, logging/checkpoint/eval cadence) composed
 with a **hardware profile** (`tiny_grpo.hardware.MPS_16GB` /
-`CUDA_4GB` — device, precision, batch size, gradient checkpointing, `beta`).
-Neither hardcodes the other's settings.
+`CUDA_4GB` — device, precision, batch size, gradient checkpointing, `beta`) and
+a **model profile** (`smollm2_135m` / `qwen3_0_6b` — model ID, chat-template
+behavior, LoRA targets). These three concerns remain independent.
 
 ## Testing
 

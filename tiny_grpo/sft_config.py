@@ -5,6 +5,7 @@ import math
 
 from tiny_grpo.config import DatasetConfig, LoraConfig, MAX_CHECKPOINTS_TO_KEEP, ResumeConfig
 from tiny_grpo.hardware import CUDA_4GB, HARDWARE_PROFILES, MPS_16GB, HardwareProfile, Precision
+from tiny_grpo.model_profiles import DEFAULT_MODEL_PROFILE_NAME, MODEL_PROFILES, SMOLLM2_135M, ModelProfile
 
 
 class SFTConfigError(ValueError):
@@ -37,7 +38,9 @@ class SFTTrainingConfig:
     run_name: str
     hardware_profile_name: str
     seed: int = 42
-    model_id: str = "HuggingFaceTB/SmolLM2-135M-Instruct"
+    model_profile_name: str = DEFAULT_MODEL_PROFILE_NAME
+    model_id: str = SMOLLM2_135M.model_id
+    chat_template_kwargs: dict = dataclasses.field(default_factory=dict)
     precision: Precision = "fp32"
     device: str = "mps"
     env_setup: dict = dataclasses.field(default_factory=dict)
@@ -70,6 +73,13 @@ def validate_sft_config(config: SFTTrainingConfig) -> None:
         raise SFTConfigError(f"unknown hardware profile {config.hardware_profile_name!r}")
     if config.hardware_profile_name not in SFT_HARDWARE_DEFAULTS:
         raise SFTConfigError(f"no SFT defaults for hardware profile {config.hardware_profile_name!r}")
+    if config.model_profile_name not in MODEL_PROFILES:
+        raise SFTConfigError(f"unknown model profile {config.model_profile_name!r}")
+    model_profile = MODEL_PROFILES[config.model_profile_name]
+    if config.model_id != model_profile.model_id:
+        raise SFTConfigError("model_id does not match the selected model profile")
+    if config.chat_template_kwargs != model_profile.chat_template_kwargs:
+        raise SFTConfigError("chat_template_kwargs do not match the selected model profile")
     hardware = HARDWARE_PROFILES[config.hardware_profile_name]
     if config.device != hardware.device:
         raise SFTConfigError(
@@ -109,16 +119,20 @@ def _compose_sft(
     dataset: DatasetConfig,
     run_shape: dict,
     hardware: HardwareProfile,
+    model_profile: ModelProfile = SMOLLM2_135M,
     **overrides,
 ) -> SFTTrainingConfig:
     defaults = SFT_HARDWARE_DEFAULTS[hardware.name]
     fields = dict(
-        run_name=run_name,
+        run_name=model_profile.run_name(run_name),
         hardware_profile_name=hardware.name,
+        model_profile_name=model_profile.name,
+        model_id=model_profile.model_id,
+        chat_template_kwargs=model_profile.chat_template_kwargs,
+        lora=LoraConfig(target_modules=model_profile.lora_target_modules),
         precision=hardware.precision,
         device=hardware.device,
         env_setup=dict(hardware.env_setup),
-        lora=LoraConfig(),
         dataset=dataset,
         max_sequence_length=defaults.max_sequence_length,
         max_completion_length=min(hardware.max_completion_length, 128),
@@ -131,17 +145,18 @@ def _compose_sft(
     return SFTTrainingConfig(**fields)
 
 
-def sft_smoke_config(hardware: HardwareProfile, **overrides) -> SFTTrainingConfig:
+def sft_smoke_config(hardware: HardwareProfile, model_profile: ModelProfile = SMOLLM2_135M, **overrides) -> SFTTrainingConfig:
     return _compose_sft(
         run_name="sft_smoke",
         dataset=DatasetConfig(split_seed=42, train_size=64, val_size=16, test_size=32),
         run_shape=dict(max_steps=3, checkpoint_steps=2, eval_steps=2, logging_steps=1),
         hardware=hardware,
+        model_profile=model_profile,
         **overrides,
     )
 
 
-def sft_debug_config(hardware: HardwareProfile, **overrides) -> SFTTrainingConfig:
+def sft_debug_config(hardware: HardwareProfile, model_profile: ModelProfile = SMOLLM2_135M, **overrides) -> SFTTrainingConfig:
     # With batch=1 and accumulation=8 on cuda_4gb, 32 optimizer steps consume
     # approximately one epoch over the 256-example debug subset.
     return _compose_sft(
@@ -149,11 +164,12 @@ def sft_debug_config(hardware: HardwareProfile, **overrides) -> SFTTrainingConfi
         dataset=DatasetConfig(split_seed=42, train_size=256, val_size=32, test_size=64),
         run_shape=dict(max_steps=32, checkpoint_steps=8, eval_steps=8, logging_steps=1),
         hardware=hardware,
+        model_profile=model_profile,
         **overrides,
     )
 
 
-def sft_stronger_config(hardware: HardwareProfile, **overrides) -> SFTTrainingConfig:
+def sft_stronger_config(hardware: HardwareProfile, model_profile: ModelProfile = SMOLLM2_135M, **overrides) -> SFTTrainingConfig:
     """Two effective epochs over the full 1,024-example reserved train set.
 
     Compute optimizer steps from the hardware-specific effective batch so the
@@ -175,5 +191,6 @@ def sft_stronger_config(hardware: HardwareProfile, **overrides) -> SFTTrainingCo
             logging_steps=1,
         ),
         hardware=hardware,
+        model_profile=model_profile,
         **overrides,
     )

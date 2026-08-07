@@ -13,6 +13,7 @@ import dataclasses
 from typing import Literal
 
 from tiny_grpo.hardware import CUDA_4GB, HARDWARE_PROFILES, HardwareProfile, Precision
+from tiny_grpo.model_profiles import DEFAULT_MODEL_PROFILE_NAME, MODEL_PROFILES, SMOLLM2_135M, ModelProfile
 
 # Hard cap, not a default to raise casually: checkpoints store optimizer/scheduler
 # state on top of the adapter, so they're disk-heavy even at this model scale, and
@@ -56,7 +57,9 @@ class TrainingConfig:
     run_name: str
     hardware_profile_name: str
     seed: int = 42
-    model_id: str = "HuggingFaceTB/SmolLM2-135M-Instruct"
+    model_profile_name: str = DEFAULT_MODEL_PROFILE_NAME
+    model_id: str = SMOLLM2_135M.model_id
+    chat_template_kwargs: dict = dataclasses.field(default_factory=dict)
     precision: Precision = "fp32"
     device: str = "mps"
     # Environment variables applied before training (MPS fallback / CUDA alloc
@@ -98,6 +101,13 @@ def validate(config: TrainingConfig) -> None:
             f"unknown hardware_profile_name {config.hardware_profile_name!r}; "
             f"expected one of {sorted(HARDWARE_PROFILES)}"
         )
+    if config.model_profile_name not in MODEL_PROFILES:
+        raise ConfigError(f"unknown model_profile_name {config.model_profile_name!r}")
+    model_profile = MODEL_PROFILES[config.model_profile_name]
+    if config.model_id != model_profile.model_id:
+        raise ConfigError("model_id does not match the selected model profile")
+    if config.chat_template_kwargs != model_profile.chat_template_kwargs:
+        raise ConfigError("chat_template_kwargs do not match the selected model profile")
 
     if config.precision not in ("fp32", "bf16", "fp16"):
         raise ConfigError(f"unsupported precision: {config.precision!r}")
@@ -193,6 +203,7 @@ def validate(config: TrainingConfig) -> None:
 
 
 def _compose(run_name: str, dataset: DatasetConfig, run_shape: dict, hardware: HardwareProfile,
+             model_profile: ModelProfile = SMOLLM2_135M,
              profile_defaults: dict | None = None, **overrides) -> TrainingConfig:
     """`run_shape` carries the run-profile-specific fields (max_steps, checkpoint_steps,
     eval_steps, logging_steps) as a dict, not individual keyword params, so that
@@ -203,8 +214,11 @@ def _compose(run_name: str, dataset: DatasetConfig, run_shape: dict, hardware: H
     length) -> `**overrides` (explicit caller overrides, always win).
     """
     fields = dict(
-        run_name=run_name,
+        run_name=model_profile.run_name(run_name),
         hardware_profile_name=hardware.name,
+        model_profile_name=model_profile.name,
+        model_id=model_profile.model_id,
+        chat_template_kwargs=model_profile.chat_template_kwargs,
         precision=hardware.precision,
         device=hardware.device,
         env_setup=dict(hardware.env_setup),
@@ -223,7 +237,7 @@ def _compose(run_name: str, dataset: DatasetConfig, run_shape: dict, hardware: H
     return TrainingConfig(**fields)
 
 
-def smoke_config(hardware: HardwareProfile, **overrides) -> TrainingConfig:
+def smoke_config(hardware: HardwareProfile, model_profile: ModelProfile = SMOLLM2_135M, **overrides) -> TrainingConfig:
     """Fast sanity-check profile: verifies the training loop runs end to end.
 
     Deliberately caps max_completion_length at 128 regardless of the hardware
@@ -239,23 +253,25 @@ def smoke_config(hardware: HardwareProfile, **overrides) -> TrainingConfig:
         dataset=DatasetConfig(split_seed=42, train_size=64, val_size=16, test_size=32),
         run_shape=dict(max_steps=10, checkpoint_steps=5, eval_steps=5, logging_steps=1),
         hardware=hardware,
+        model_profile=model_profile,
         profile_defaults=dict(max_completion_length=min(hardware.max_completion_length, 128)),
         **overrides,
     )
 
 
-def debug_config(hardware: HardwareProfile, **overrides) -> TrainingConfig:
+def debug_config(hardware: HardwareProfile, model_profile: ModelProfile = SMOLLM2_135M, **overrides) -> TrainingConfig:
     """Slightly larger profile for iterating on reward/config changes."""
     return _compose(
         run_name="debug",
         dataset=DatasetConfig(split_seed=42, train_size=256, val_size=32, test_size=64),
         run_shape=dict(max_steps=50, checkpoint_steps=10, eval_steps=10, logging_steps=1),
         hardware=hardware,
+        model_profile=model_profile,
         **overrides,
     )
 
 
-def longer_config(hardware: HardwareProfile, **overrides) -> TrainingConfig:
+def longer_config(hardware: HardwareProfile, model_profile: ModelProfile = SMOLLM2_135M, **overrides) -> TrainingConfig:
     """Larger profile for an explicit, user-requested experiment.
 
     Never launched automatically — a multi-hour run must be started deliberately,
@@ -268,5 +284,6 @@ def longer_config(hardware: HardwareProfile, **overrides) -> TrainingConfig:
         dataset=DatasetConfig(split_seed=42, train_size=1024, val_size=64, test_size=128),
         run_shape=dict(max_steps=200, checkpoint_steps=25, eval_steps=25, logging_steps=5),
         hardware=hardware,
+        model_profile=model_profile,
         **overrides,
     )

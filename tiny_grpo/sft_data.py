@@ -26,19 +26,26 @@ def build_sft_target(answer_text: str) -> str:
     return f"{reasoning}\n<answer>{gold}</answer>"
 
 
-def to_sft_example(example: dict) -> dict:
+def to_sft_example(example: dict, chat_template_kwargs: dict | None = None) -> dict:
     prompt = to_prompt(example)["prompt"]
-    return {
+    result = {
         "prompt": prompt,
         "completion": [{"role": "assistant", "content": build_sft_target(example["answer"])}],
     }
+    if chat_template_kwargs:
+        result["chat_template_kwargs"] = dict(chat_template_kwargs)
+    return result
 
 
 def audit_sft_lengths(dataset, tokenizer, max_sequence_length: int) -> dict:
     lengths = []
     for example in dataset:
         conversation = example["prompt"] + example["completion"]
-        encoded = tokenizer.apply_chat_template(conversation, tokenize=True)
+        encoded = tokenizer.apply_chat_template(
+            conversation,
+            tokenize=True,
+            **example.get("chat_template_kwargs", {}),
+        )
         token_ids = encoded["input_ids"] if isinstance(encoded, Mapping) else encoded
         if token_ids and isinstance(token_ids[0], list):
             if len(token_ids) != 1:

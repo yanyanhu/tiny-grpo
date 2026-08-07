@@ -14,6 +14,7 @@ from tiny_grpo.config import (
     smoke_config,
 )
 from tiny_grpo.hardware import CUDA_4GB, MPS_16GB
+from tiny_grpo.model_profiles import QWEN3_0_6B
 
 PROFILE_FACTORIES = [smoke_config, debug_config, longer_config]
 HARDWARE_PROFILES = [MPS_16GB, CUDA_4GB]
@@ -52,6 +53,18 @@ def test_profile_picks_up_hardware_specific_values():
     # reference regardless of beta, so the memory-cost rationale for
     # defaulting to 0 here no longer applies (see tiny_grpo/hardware.py).
     assert cuda_config.beta == 0.04
+
+
+def test_qwen_model_profile_is_explicit_and_suffixes_run_name():
+    config = smoke_config(CUDA_4GB, model_profile=QWEN3_0_6B)
+    assert config.run_name == "smoke_qwen3_0_6b"
+    assert config.model_id == "Qwen/Qwen3-0.6B"
+    assert config.chat_template_kwargs == {"enable_thinking": False}
+
+
+def test_model_id_cannot_drift_from_selected_profile():
+    with pytest.raises(ConfigError, match="model_id does not match"):
+        dataclasses.replace(smoke_config(CUDA_4GB, model_profile=QWEN3_0_6B), model_id="wrong")
 
 
 def test_smoke_caps_max_completion_length_below_hardware_default_on_mps():

@@ -584,6 +584,122 @@ completion-only SFT formatting, and run only an SFT/GRPO memory smoke before
 choosing whether a warm-start is needed. Do not infer backward-pass memory from
 the successful generation diagnostic.
 
+## 2.11 Qwen3 Training-Memory Gate (2026-08-07)
+
+The recommended integration and both training-memory smokes were completed on
+the RTX 3050 4GB profile:
+
+- Added the explicit `qwen3_0_6b` model profile for `Qwen/Qwen3-0.6B` with
+  non-thinking chat-template behavior. SmolLM2 remains the default.
+- Centralized model ID, template kwargs, and LoRA target modules in the typed
+  profile. Non-default profiles receive model-specific run names so resume
+  cannot silently cross model families.
+- Verified on the actually loaded Qwen3 model that `q_proj`, `k_proj`,
+  `v_proj`, and `o_proj` all exist.
+- A three-step SFT smoke completed in
+  `outputs/sft_smoke_qwen3_0_6b_20260807_203020`. It peaked at 2,189 MiB CUDA
+  allocated, saved checkpoints and a final adapter, and had no sequence-length
+  audit failures. Its 16-example evaluation changed accuracy from 18.8% to
+  31.2%, but that tiny smoke evaluation is not a model-quality comparison.
+- A one-step direct GRPO smoke completed in
+  `outputs/smoke_qwen3_0_6b_20260807_204037` with four generations,
+  `beta=0.04`, and gradient checkpointing. It peaked at 2,809 MiB CUDA
+  allocated, logged a non-zero exact-reward standard deviation, and saved
+  checkpoint 1 plus the final adapter. The 16-example evaluation changed
+  accuracy from 18.8% to 25.0% and format rate from 87.5% to 93.8%; these are
+  execution-smoke observations, not an improvement claim.
+
+The GRPO training-time gate therefore passes with about 1.25 GiB between the
+measured allocated watermark and the nominal 4 GiB device capacity. PyTorch's
+expandable-segments reserved-memory counter exceeded physical capacity during
+the run, so allocated memory is the interpretable feasibility watermark; the
+run itself completed without OOM.
+
+Decision: use base Qwen3 non-thinking for the next controlled direct-GRPO
+experiment. The full 200-prompt diagnostic already showed 36% mixed
+exact-reward groups, so SFT is not required to bootstrap reward variance. Keep
+the Qwen3 SFT path available for a later controlled comparison, but do not make
+it the default starting point based on smoke metrics.
+
+## 2.12 Qwen3 Direct-GRPO Debug Run (2026-08-07)
+
+The first controlled base-Qwen3 debug run completed successfully in
+`outputs/debug_qwen3_0_6b_20260807_205205` under a 7,200-second hard timeout.
+It used the unchanged `cuda_4gb` debug configuration: 50 steps, 256 training
+examples, 32 validation examples, four generations, `beta=0.04`, BF16, and
+gradient checkpointing. It started from the base model with a fresh LoRA
+adapter, not from SFT.
+
+Execution evidence:
+
+- trainer runtime: 3,334.5 seconds;
+- maximum CUDA memory allocated: 3,108 MiB;
+- final status: completed without OOM or timeout;
+- retained checkpoints: 40 and 50, respecting the two-checkpoint cap;
+- final adapter and optimizer-bearing checkpoints were saved;
+- intermediate validation exact-reward means at steps 10/20/30/40/50 were
+  32.8%, 35.9%, 36.7%, 28.9%, and 29.7%, respectively;
+- intermediate zero-reward-variance group fractions were 46.9%, 43.8%,
+  37.5%, 31.2%, and 31.2%.
+
+The separate fixed 32-example, single-generation comparison was:
+
+| Metric | Base | Post-GRPO |
+|---|---:|---:|
+| Exact accuracy | 28.1% (9/32) | 31.2% (10/32) |
+| Valid format | 90.6% | 93.8% |
+| Parse failure | 9.4% | 6.2% |
+| Mean reward | 0.4625 | 0.5000 |
+
+This is a successful and stable training run, but the one-example accuracy
+difference is not sufficient evidence of model-quality improvement. The
+intermediate trainer evaluations also fluctuate rather than improve
+monotonically. The next quality gate is the unchanged canonical 200-prompt,
+four-generation rollout diagnostic loaded from this run's final adapter. Use
+that comparison to measure pass@1, pass@4, sample exact accuracy, and mixed
+exact-reward groups before choosing a longer GRPO run or another intervention.
+
+## 2.13 Canonical Diagnostic after Direct GRPO (2026-08-07)
+
+The prescribed final-adapter diagnostic completed in
+`outputs/diagnostic_debug_20260807_215822` under the same 1,800-second timeout
+as the base-Qwen3 diagnostic. A programmatic configuration comparison found no
+mismatch in manifest version or prompt IDs, prompt count, generation count,
+completion cap, temperature, top-p, top-k, sampling seed/formula, model ID, or
+non-thinking template mode. The only intended difference was loading the
+final adapter from the 50-step debug run.
+
+| Metric | Base Qwen3 | After 50-step GRPO | Change |
+|---|---:|---:|---:|
+| First-sample pass@1 | 15.5% (31/200) | 17.0% (34/200) | +1.5 pp |
+| pass@4 | 38.0% (76/200) | 39.5% (79/200) | +1.5 pp |
+| Sample exact accuracy | 16.63% (133/800) | 18.63% (149/800) | +2.0 pp |
+| Mixed exact-reward groups | 36.0% (72/200) | 37.5% (75/200) | +1.5 pp |
+| Zero exact-reward-std groups | 64.0% | 62.5% | -1.5 pp |
+| Valid format | 87.38% | 87.75% | +0.37 pp |
+| Truncation | 6.88% | 7.75% | +0.87 pp |
+| Mean total reward | 0.3410 | 0.3618 | +0.0208 |
+
+Adapter runtime was 1,001.3 seconds; CUDA maximum allocated memory was 1,390.6
+MiB. The run completed without OOM or timeout and saved all 200 prompt records
+and 800 completions.
+
+The direction is mildly positive, but the coverage metrics do not establish a
+clear improvement. Paired transitions were 7 adapter-only versus 4 base-only
+correct prompts for pass@1, and 12 versus 9 for pass@4 (two-sided exact
+McNemar p-values 0.55 and 0.66). At the prompt-cluster level, the adapter
+produced more correct samples on 29 prompts, fewer on 18, and tied on 153
+(two-sided sign p=0.14). Treating all 800 completions as independent would
+overstate evidence because four samples share each prompt.
+
+Decision: record the 50-step run as a stable, modest directional result, not a
+demonstrated quality improvement. Do not jump directly to the 200-step longer
+profile on this evidence alone. A sensible next planning step is a bounded
+replication or a predeclared intermediate-duration run with a non-decaying or
+slower-decaying learning-rate schedule, followed by the same canonical paired
+diagnostic. Change only one training variable and retain the base and 50-step
+results as fixed references.
+
 ---
 
 # Phase 3 — Continue the SFT Adapter with Exact-Reward GRPO
