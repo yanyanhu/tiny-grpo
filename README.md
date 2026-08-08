@@ -204,6 +204,29 @@ timeout --signal=TERM --kill-after=30s 1800s \
 Non-default model profiles add their name to the run directory, preventing a
 resume from silently crossing model families.
 
+Training records the learning-rate scheduler explicitly. Existing profiles use
+`linear`; controlled experiments can select the supported constant schedule
+without changing the defaults, for example:
+
+```sh
+uv run python -u train_grpo.py \
+  --profile debug --hardware cuda_4gb --model-profile qwen3_0_6b \
+  --set run_name=debug_qwen3_0_6b_constant_lr \
+  --set learning_rate=5e-6 --set lr_scheduler_type=constant
+```
+
+`--set` also accepts one-level dotted dataclass fields. The 512-unique-example
+Qwen3 experiment keeps the debug profile's 50 steps, linear schedule, and all
+other settings fixed while overriding only the training subset size and run
+name:
+
+```sh
+uv run python -u train_grpo.py \
+  --profile debug --hardware cuda_4gb --model-profile qwen3_0_6b \
+  --set run_name=debug_qwen3_0_6b_train512 \
+  --set dataset.train_size=512
+```
+
 The command performs generation only (no optimizer/backward pass), using the
 versioned `data/diagnostic_manifest_v1.json`. It saves every prompt group and
 reports pass@1, pass@k, sample exact accuracy, formatting/failure categories,

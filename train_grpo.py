@@ -16,7 +16,14 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
-from tiny_grpo.config import ResumeConfig, TrainingConfig, debug_config, longer_config, smoke_config
+from tiny_grpo.config import (
+    ResumeConfig,
+    TrainingConfig,
+    apply_config_override,
+    debug_config,
+    longer_config,
+    smoke_config,
+)
 from tiny_grpo.evaluate import evaluate_model
 from tiny_grpo.hardware import (
     HARDWARE_PROFILES,
@@ -95,6 +102,7 @@ def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
         chat_template_kwargs=config.chat_template_kwargs,
         beta=config.beta,
         learning_rate=config.learning_rate,
+        lr_scheduler_type=config.lr_scheduler_type,
         logging_steps=config.logging_steps,
         disable_tqdm=True,  # ConsoleProgressCallback is the single progress line instead.
         report_to=["tensorboard"],
@@ -166,9 +174,10 @@ def main():
         action="append",
         default=[],
         metavar="FIELD=VALUE",
-        help="Override a top-level resolved TrainingConfig field for this run, e.g. "
-        "--set max_completion_length=128. Repeatable. VALUE is parsed as a Python literal "
-        "(int/float/bool/str) via ast.literal_eval, falling back to the raw string.",
+        help="Override a top-level resolved TrainingConfig field, e.g. "
+        "--set max_completion_length=128, or a nested dataclass field, e.g. "
+        "--set dataset.train_size=512. Repeatable. VALUE is parsed as a Python "
+        "literal (int/float/bool/str) via ast.literal_eval, falling back to the raw string.",
     )
     args = parser.parse_args()
 
@@ -185,7 +194,7 @@ def main():
             value = ast.literal_eval(raw_value)
         except (ValueError, SyntaxError):
             value = raw_value
-        config = dataclasses.replace(config, **{field: value})
+        config = apply_config_override(config, field, value)
     verify_precision_supported(device, config.precision)  # fails loudly, never silently substitutes
 
     for env_name, env_value in config.env_setup.items():

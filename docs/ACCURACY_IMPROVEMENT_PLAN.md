@@ -700,6 +700,148 @@ slower-decaying learning-rate schedule, followed by the same canonical paired
 diagnostic. Change only one training variable and retain the base and 50-step
 results as fixed references.
 
+## 2.14 Constant-Learning-Rate Experiment (2026-08-08)
+
+To test whether the original linear schedule starved late updates, the typed
+GRPO configuration gained an explicit `lr_scheduler_type` field. Existing run
+profiles remain `linear`; the experiment used a distinct run name and changed
+only the schedule/rate combination to constant `5e-6`. This approximately
+matches the original linear `1e-5`-to-zero schedule's average learning rate,
+while keeping late-step updates active.
+
+The 50-step run completed in
+`outputs/debug_qwen3_0_6b_constant_lr_20260808_141137` under the same
+7,200-second timeout, dataset, seed, reward, and CUDA settings as the original
+debug run. Trainer runtime was 3,298.3 seconds, maximum CUDA memory allocated
+was 3,108 MiB, checkpoints 40/50 and the final adapter were saved, and every
+logged training step reported exactly `5e-6`. The fixed 32-example comparison
+changed from 28.1% (9/32) base accuracy to 34.4% (11/32), still too small for
+an improvement claim.
+
+The canonical final-adapter diagnostic completed in
+`outputs/diagnostic_debug_20260808_160104` with the same 200 prompts, four
+samples, seed, generation settings, model, and non-thinking template as the
+two previous Qwen3 diagnostics:
+
+| Metric | Base Qwen3 | Linear-decay GRPO | Constant-5e-6 GRPO |
+|---|---:|---:|---:|
+| First-sample pass@1 | 15.5% | 17.0% | 17.5% |
+| pass@4 | 38.0% | 39.5% | 41.5% |
+| Sample exact accuracy | 16.63% | 18.63% | 18.88% |
+| Mixed exact-reward groups | 36.0% | 37.5% | 39.5% |
+| Zero exact-reward-std groups | 64.0% | 62.5% | 60.5% |
+| Valid format | 87.38% | 87.75% | 86.63% |
+| Truncation | 6.88% | 7.75% | 9.38% |
+| Mean total reward | 0.3410 | 0.3618 | 0.3620 |
+
+Relative to base, constant LR produced more correct samples on 37 prompts,
+fewer on 22, and tied on 141 (two-sided prompt-level sign p=0.067). Relative
+to the linear-decay adapter, it produced more on 20 prompts, fewer on 17, tied
+on 163, and added only 2 exact completions out of 800 (sign p=0.74). Its
+pass@1/pass@4 paired changes versus the decayed run were likewise not
+persuasive. The slightly higher pass@4 therefore does not establish that
+removing decay is meaningfully better, particularly alongside higher
+truncation and lower format compliance.
+
+Decision: keep `linear` as the default and do not extend constant-LR training
+based on this result. The next one-variable experiment with the strongest
+rationale is training-data diversity: use 512 unique training examples for
+the same 50 steps while returning to the original linear schedule and keeping
+all other settings fixed. This lowers repeated exposure from about 1.56 to
+about 0.78 epochs and tests whether broader GSM8K coverage improves
+generalization more than further schedule tuning.
+
+## 2.15 Base-Qwen3 pass@8 Capacity Diagnostic (2026-08-08)
+
+Before spending another training run on the 512-example proposal, a
+generation-only pass@8 diagnostic tested whether the base Qwen3 model has
+useful solutions beyond the first four samples. A 16-prompt CUDA smoke
+completed first, followed by the canonical 200-prompt manifest in
+`outputs/diagnostic_debug_20260808_185143`. The full run used the unchanged
+base `Qwen/Qwen3-0.6B` model with no adapter, non-thinking mode, seed 42,
+temperature 1, top-p 1, top-k 0, and a 128-token completion cap. It completed
+in 728.7 seconds under an 1,800-second timeout. Maximum CUDA memory allocated
+was 1,618.6 MiB; generation therefore fit the 4 GB GPU comfortably.
+
+| Metric | First 4 within pass@8 run | All 8 | Change |
+|---|---:|---:|---:|
+| Prompts with any exact completion | 36.5% (73/200) | 48.0% (96/200) | +11.5 pp (23 prompts) |
+| Prompts with no exact completion | 63.5% (127/200) | 52.0% (104/200) | -11.5 pp |
+
+Across all 1,600 completions, first-sample pass@1 was 18.0%, sample exact
+accuracy was 16.5%, valid format rate was 88.13%, mixed exact-reward groups
+were 47.5%, and truncation was 6.56%. The pass@8 95% Wilson interval was
+41.18%-54.90%.
+
+The first four samples were recomputed inside the pass@8 run because changing
+the generation batch size changes RNG consumption: only 114/200 prompts had
+the same four-sample exact-reward vector as the older independent pass@4 run,
+and only one had identical completion text. The nested 36.5%-to-48.0%
+comparison is therefore the clean capacity result; the older independent
+pass@4 result of 38.0% is directionally consistent but is not treated as a
+nested baseline.
+
+Decision: pass@8 materially exceeds pass@4, so the model is not simply at a
+hard capability ceiling after four attempts. At the same time, 104/200
+prompts remained wrong across all eight samples, leaving substantial
+persistent failure coverage for training to address. Proceed with the
+predeclared 512-unique-example, 50-step experiment using the original linear
+learning-rate schedule and otherwise unchanged Qwen3 GRPO configuration.
+This result establishes generation-time capacity only; it does not establish
+that eight-generation GRPO training fits in 4 GB, so retain the verified
+training `num_generations=4` setting for the 512-example experiment.
+
+## 2.16 512-Unique-Example GRPO Experiment (2026-08-08)
+
+The proposed training-data-diversity experiment completed in
+`outputs/debug_qwen3_0_6b_train512_20260808_192735`. The run changed the debug
+training subset from 256 to 512 unique examples while retaining 50 steps,
+the original linear `1e-5`-to-zero schedule, seed 42, 32-example validation
+set, four generations, Qwen3 non-thinking mode, LoRA configuration, rewards,
+and all CUDA settings. This lowered repeated exposure from about 1.56 to
+about 0.78 epochs. The CLI's existing `--set` mechanism was extended to
+support one-level dotted dataclass fields so the run records the change
+explicitly as `--set dataset.train_size=512` without altering a profile
+default.
+
+A one-step verification run completed before the experiment. The full run
+then completed all 50 steps in 3,699 seconds under a 7,200-second timeout,
+saved checkpoints 40/50 plus the final adapter, and reported 3,079 MiB maximum
+CUDA memory allocated. Across the 50 training batches, mean exact reward was
+23.56% and mean total reward was 0.4169. The fixed 32-example single-sample
+evaluation changed from 9.38% (3/32) before training to 15.63% (5/32) after
+training; this small evaluation is monitoring evidence only.
+
+The canonical 200-prompt, four-generation final-adapter diagnostic completed
+in `outputs/diagnostic_debug_20260808_204113` under an 1,800-second timeout:
+
+| Metric | Base Qwen3 | Linear, 256 examples | Constant, 256 examples | Linear, 512 examples |
+|---|---:|---:|---:|---:|
+| First-sample pass@1 | 15.5% | 17.0% | 17.5% | 17.0% |
+| pass@4 | 38.0% | 39.5% | 41.5% | 38.5% |
+| Sample exact accuracy | 16.63% | 18.63% | 18.88% | 18.38% |
+| Mixed exact-reward groups | 36.0% | 37.5% | 39.5% | 35.5% |
+| Zero exact-reward-std groups | 64.0% | 62.5% | 60.5% | 64.5% |
+| Valid format | 87.38% | 87.75% | 86.63% | 89.50% |
+| Truncation | 6.88% | 7.75% | 9.38% | 6.50% |
+| Mean total reward | 0.3410 | 0.3618 | 0.3620 | 0.3628 |
+
+Relative to base, the 512-example adapter produced more exact samples on 29
+prompts, fewer on 16, and tied on 155 (two-sided prompt-level sign p=0.072),
+but pass@4 transitions were nearly symmetric: 11 adapter-only versus 10
+base-only prompts (exact McNemar p=1.0). Relative to the 256-example linear
+run, exact-sample counts were 16 better, 17 worse, and 167 tied (sign p=1.0),
+with pass@4 transitions of 8 gains versus 10 losses. It also did not exceed
+the constant-schedule run.
+
+Decision: broader 512-example coverage did not demonstrate a canonical
+accuracy improvement and should not be extended with the same configuration.
+The favorable prompt-level sample-count direction versus base and improved
+format compliance are insufficient to override the flat pass@4 and the
+absence of improvement over the 256-example controls. Retain the run as a
+useful negative result; do not claim model-quality improvement or spend
+another 50-step run on dataset-size or scheduler tuning alone.
+
 ---
 
 # Phase 3 — Continue the SFT Adapter with Exact-Reward GRPO

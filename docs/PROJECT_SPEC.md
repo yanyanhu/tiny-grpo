@@ -217,6 +217,7 @@ At minimum, configuration must cover:
 - gradient accumulation;
 - gradient checkpointing toggle (default value is profile-specific — see SPEC docs);
 - learning rate;
+- learning-rate scheduler type;
 - maximum steps;
 - logging interval;
 - checkpoint interval;
@@ -540,11 +541,17 @@ remains explicit, not casual. The Qwen3 gate was completed on 2026-08-07:
 - document the swap (or the decision not to make it) the same way every
   other deviation in this project is documented, rather than by drift.
 
-The next model-quality experiment should use base Qwen3 non-thinking with
-direct exact-reward GRPO. Its canonical rollout diagnostic already has healthy
-mixed exact-reward groups, so SFT is not needed as a bootstrap prerequisite.
-The successful three-step Qwen3 SFT run is memory evidence only, not evidence
-that SFT improves model quality.
+The base-Qwen3 direct-GRPO gate and its immediate one-variable follow-ups are
+complete. Canonical 200-prompt diagnostics found only modest, statistically
+inconclusive changes after 50 steps with either the original linear schedule
+or constant learning rate. Expanding the same 50-step linear run from 256 to
+512 unique training examples also did not improve pass@4 (38.5%, versus 38.0%
+base and 39.5% for the 256-example linear run). Do not extend the same
+configuration or claim model-quality improvement from these runs. Full
+commands, paired comparisons, and retained output paths are recorded in
+`docs/ACCURACY_IMPROVEMENT_PLAN.md`. The successful Qwen3 SFT and GRPO smoke
+runs remain memory/integration evidence; they do not independently establish
+quality improvement.
 
 ## Completion Criteria
 

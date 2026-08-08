@@ -9,6 +9,7 @@ from tiny_grpo.config import (
     ConfigError,
     DatasetConfig,
     TrainingConfig,
+    apply_config_override,
     debug_config,
     longer_config,
     smoke_config,
@@ -207,6 +208,39 @@ def test_zero_max_steps_raises():
 def test_nonpositive_learning_rate_raises():
     with pytest.raises(ConfigError):
         TrainingConfig(run_name="x", hardware_profile_name=MPS_16GB.name, learning_rate=0.0)
+
+
+def test_learning_rate_scheduler_is_explicit_and_linear_by_default():
+    assert smoke_config(MPS_16GB).lr_scheduler_type == "linear"
+
+
+def test_constant_learning_rate_scheduler_is_supported():
+    config = debug_config(MPS_16GB, learning_rate=5e-6, lr_scheduler_type="constant")
+    assert config.learning_rate == 5e-6
+    assert config.lr_scheduler_type == "constant"
+
+
+def test_nested_dataset_override_preserves_other_debug_settings():
+    config = debug_config(CUDA_4GB)
+
+    updated = apply_config_override(config, "dataset.train_size", 512)
+
+    assert updated.dataset.train_size == 512
+    assert config.dataset.train_size == 256
+    assert updated.max_steps == config.max_steps == 50
+    assert updated.lr_scheduler_type == config.lr_scheduler_type == "linear"
+
+
+def test_override_rejects_path_deeper_than_one_nested_field():
+    config = debug_config(CUDA_4GB)
+
+    with pytest.raises(ValueError, match="at most one dot"):
+        apply_config_override(config, "dataset.extra.train_size", 512)
+
+
+def test_unknown_learning_rate_scheduler_raises():
+    with pytest.raises(ConfigError, match="unsupported lr_scheduler_type"):
+        TrainingConfig(run_name="x", hardware_profile_name=MPS_16GB.name, lr_scheduler_type="cosine")
 
 
 @pytest.mark.parametrize(

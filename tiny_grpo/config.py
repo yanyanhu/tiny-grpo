@@ -83,6 +83,10 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     learning_rate: float = 1e-5
+    # Explicit rather than inherited from Transformers so experiment metadata
+    # records whether updates decay or remain constant. Keep the supported set
+    # deliberately small until another schedule is actually needed.
+    lr_scheduler_type: Literal["linear", "constant"] = "linear"
     max_steps: int = 10
     logging_steps: int = 1
     checkpoint_steps: int = 5
@@ -93,6 +97,21 @@ class TrainingConfig:
 
     def __post_init__(self) -> None:
         validate(self)
+
+
+def apply_config_override(config: TrainingConfig, field_path: str, value) -> TrainingConfig:
+    """Return ``config`` with one top-level or one-level nested field replaced."""
+    parts = field_path.split(".")
+    if len(parts) == 1:
+        return dataclasses.replace(config, **{parts[0]: value})
+    if len(parts) == 2:
+        parent_name, child_name = parts
+        parent = getattr(config, parent_name)
+        if not dataclasses.is_dataclass(parent):
+            raise ValueError(f"override parent {parent_name!r} is not a dataclass")
+        updated_parent = dataclasses.replace(parent, **{child_name: value})
+        return dataclasses.replace(config, **{parent_name: updated_parent})
+    raise ValueError(f"override field path must contain at most one dot, got {field_path!r}")
 
 
 def validate(config: TrainingConfig) -> None:
@@ -186,6 +205,9 @@ def validate(config: TrainingConfig) -> None:
 
     if config.learning_rate <= 0:
         raise ConfigError(f"learning_rate must be > 0, got {config.learning_rate}")
+
+    if config.lr_scheduler_type not in ("linear", "constant"):
+        raise ConfigError(f"unsupported lr_scheduler_type: {config.lr_scheduler_type!r}")
 
     if config.temperature <= 0:
         raise ConfigError(f"temperature must be > 0, got {config.temperature}")
