@@ -556,6 +556,16 @@ commands, paired comparisons, and retained output paths are recorded in
 runs remain memory/integration evidence; they do not independently establish
 quality improvement.
 
+An eight-generation backward-pass gate subsequently saturated the 4 GiB GPU
+and was approximately six times slower than pass@4, so pass@8 GRPO is not a
+sanctioned next experiment on `cuda_4gb`. A generation-only thinking-mode
+probe did expand pass@4 substantially when allowed up to 1,024 completion
+tokens, but useful traces averaged hundreds of tokens and still truncated
+frequently. Treat thinking mode as a teacher/capability source, not as a
+direct GRPO configuration for this hardware. The next sanctioned training
+direction is bounded Qwen3 SFT/distillation into the short non-thinking output
+format, followed by the fixed canonical diagnostic.
+
 ## Completion Criteria
 
 The milestone is complete only when:

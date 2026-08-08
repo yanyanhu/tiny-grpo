@@ -860,6 +860,63 @@ validation identities; their validation sets are prefixes of the canonical
 diagnostic manifest and remain disjoint from every sanctioned training size.
 Historical run metadata is retained as generated rather than rewritten.
 
+## 2.18 Eight-Generation GRPO Hardware Gate (2026-08-08)
+
+The base pass@8 diagnostic showed materially more mixed exact-reward groups,
+so a real backward-pass gate tested whether eight-generation GRPO was usable
+on the RTX 3050. A one-step smoke completed, followed by a bounded ten-step
+attempt that was stopped by the user after step 5 and `checkpoint-5` once its
+hardware behavior was clear. The partial run is retained at
+`outputs/debug_qwen3_0_6b_pass8_10step_20260808_214632` and is marked failed
+to represent the intentional interruption.
+
+Pass@8 required approximately 3.92-3.95 GiB of the 4 GiB physical GPU and
+reported 4.48-4.70 GiB maximum virtual/oversubscribed CUDA allocation. Steps
+took 263-345 seconds, roughly six times the verified pass@4 step time. Although
+reward diversity improved on sampled groups, this is not a safe or practical
+training configuration for the active hardware. Do not run a 50-step pass@8
+experiment on `cuda_4gb`.
+
+## 2.19 Thinking-Mode Generation Capability Probe (2026-08-08)
+
+A paired generation-only probe tested whether Qwen3's thinking mode expands
+reasoning coverage without assuming it is trainable on 4 GiB. The first 16
+canonical prompts used four generations, seed 42, and no adapter. A
+non-thinking 256-token control was compared with thinking mode at increasing
+caps.
+
+At 256 tokens, thinking was not viable: 95.31% of completions truncated,
+valid format fell to 6.25%, and pass@4 was 6.25%. A four-prompt trace-length
+probe reduced truncation to 50% at 512 tokens and 31.25% at 1,024 tokens. The
+expanded 16-prompt thinking run therefore used a 1,024-token cap:
+
+| Metric | Non-thinking, 256 tokens | Thinking, 1,024 tokens |
+|---|---:|---:|
+| First-sample pass@1 | 0.0% | 75.0% |
+| pass@4 | 43.75% | 87.5% |
+| Sample exact accuracy | 10.94% | 62.5% |
+| Mixed exact-reward groups | 43.75% | 56.25% |
+| Valid format | 89.06% | 78.13% |
+| Truncation | 1.56% | 18.75% |
+| Average completion length | 61.4 tokens | 577.2 tokens |
+| Runtime | 56.4 seconds | 438.1 seconds |
+| Maximum CUDA allocated | 1,396 MiB | 1,766 MiB |
+
+Thinking produced more exact samples on 14/16 prompts, fewer on none, and
+tied on two. At pass@4 it recovered 7 of the 9 non-thinking failures, lost
+none of the 7 non-thinking successes, and left 2 prompts unsolved. The result
+is strong evidence that Qwen3-0.6B has latent reasoning capability suppressed
+by the short non-thinking response path, though the subset is too small for a
+final canonical quality claim.
+
+Decision: thinking-mode generation is memory-feasible and useful as a teacher,
+but direct thinking-mode GRPO is not appropriate on `cuda_4gb`. Useful traces
+average hundreds of tokens and still truncate at a 1,024-token cap, far beyond
+the verified 128-token GRPO envelope. The next training direction should be
+SFT/distillation of correct thinking-mode or GSM8K reasoning traces into the
+short non-thinking answer format. Revisit GRPO only after that warm start
+expands canonical coverage and mixed exact-reward groups.
+
 ---
 
 # Phase 3 — Continue the SFT Adapter with Exact-Reward GRPO
