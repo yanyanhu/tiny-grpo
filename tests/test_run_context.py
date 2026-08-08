@@ -48,7 +48,13 @@ def test_collect_environment_info_shape():
 def test_save_run_metadata_writes_all_files(tmp_path):
     config = smoke_config(MPS_16GB, output_dir=str(tmp_path))
     split_metadata = build_split_metadata(
-        train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42
+        train_pool_size=100,
+        test_pool_size=50,
+        train_size=20,
+        val_size=10,
+        test_size=8,
+        seed=42,
+        reserved_training_size=40,
     )
 
     save_run_metadata(tmp_path, config, split_metadata, verification_run=True)

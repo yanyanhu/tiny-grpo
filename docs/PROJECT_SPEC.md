@@ -179,6 +179,9 @@ Use:
 Requirements:
 - use a fixed split seed;
 - ensure training and validation do not overlap;
+- reserve one fixed maximum-training region and select validation after that
+  boundary, so changing the active training subset size does not change
+  validation identities;
 - keep the test split separate;
 - persist selected example IDs or indices;
 - save split sizes and seed;

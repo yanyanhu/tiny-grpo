@@ -166,6 +166,10 @@ Deterministic, seeded train/validation split from GSM8K's **train** split, plus
 a separate test split held out from GSM8K's **test** split (reserved for a
 one-time final evaluation once a configuration is chosen — not used during
 iterative training/eval). Indices are persisted per-run in `split_metadata.json`.
+The first 1,024 seeded IDs are reserved for nested training subsets; validation
+starts after that fixed boundary. Changing `train_size` within the reserved
+region therefore does not change validation identities. Validation sizes are
+stable prefixes of the canonical diagnostic manifest.
 
 ## Rollout viability diagnostic (`tiny_grpo/diagnose_rollouts.py`)
 

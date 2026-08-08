@@ -11,6 +11,8 @@ import json
 import random
 from pathlib import Path
 
+DEFAULT_RESERVED_TRAINING_SIZE = 1024
+
 
 class SplitOverlapError(ValueError):
     """Raised when train and validation indices are not disjoint."""
@@ -109,11 +111,36 @@ def build_split_metadata(
     val_size: int,
     test_size: int,
     seed: int,
+    reserved_training_size: int = DEFAULT_RESERVED_TRAINING_SIZE,
 ) -> SplitMetadata:
-    """Select disjoint train/val indices from the GSM8K *train* pool, and
-    independent test indices from the GSM8K *test* pool, using a fixed seed.
+    """Select stable, disjoint train/validation/test indices.
+
+    Training is a prefix of a fixed-size reserved region. Validation begins
+    after that region, so changing ``train_size`` does not silently change the
+    validation examples. The default boundary matches the largest sanctioned
+    training profile and the canonical diagnostic manifest.
     """
-    train_indices, val_indices = _sample_disjoint_subsets(train_pool_size, [train_size, val_size], seed)
+    if train_size > reserved_training_size:
+        raise SplitSizeError(
+            f"train_size {train_size} exceeds reserved_training_size "
+            f"{reserved_training_size}; raise the shared reservation explicitly"
+        )
+    if reserved_training_size + val_size > train_pool_size:
+        raise SplitSizeError(
+            f"reserved training size and validation size "
+            f"{[reserved_training_size, val_size]} exceed pool size {train_pool_size}"
+        )
+
+    reserved_training, val_indices = _sample_disjoint_subsets(
+        train_pool_size, [reserved_training_size, val_size], seed
+    )
+    # Sample the smaller training prefix with the same seed rather than slicing
+    # ``reserved_training``: the helper sorts returned IDs for stable persisted
+    # metadata, so slicing that list would select numerically-small IDs instead
+    # of the first IDs in the seeded shuffle.
+    (train_indices,) = _sample_disjoint_subsets(train_pool_size, [train_size], seed)
+    if not set(train_indices).issubset(reserved_training):
+        raise AssertionError("training prefix escaped the reserved training region")
     assert_disjoint(train_indices, val_indices)
     (test_indices,) = _sample_disjoint_subsets(test_pool_size, [test_size], seed)
     return SplitMetadata(

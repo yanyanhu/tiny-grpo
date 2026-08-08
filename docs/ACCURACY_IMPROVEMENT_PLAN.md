@@ -842,6 +842,24 @@ absence of improvement over the 256-example controls. Retain the run as a
 useful negative result; do not claim model-quality improvement or spend
 another 50-step run on dataset-size or scheduler tuning alone.
 
+## 2.17 Validation-Split Invariance Correction (2026-08-08)
+
+A post-experiment audit found that the original split builder selected
+validation immediately after the active `train_size`. Increasing training
+from 256 to 512 examples therefore changed all 32 training-time validation
+IDs; the two validation sets had zero overlap, and the former validation set
+became part of the larger training set. This invalidates cross-run comparison
+of the small 32-example baseline/post-training and scheduled-evaluation curves.
+It does not affect any conclusion based on the canonical 200-prompt manifest,
+which was fixed, disjoint, and unchanged across the reported diagnostics.
+
+Split construction now reserves the first 1,024 IDs in the seeded shuffle for
+nested training subsets and selects validation only after that fixed boundary.
+Smoke, debug, 512-example, and longer training sizes therefore reuse stable
+validation identities; their validation sets are prefixes of the canonical
+diagnostic manifest and remain disjoint from every sanctioned training size.
+Historical run metadata is retained as generated rather than rewritten.
+
 ---
 
 # Phase 3 — Continue the SFT Adapter with Exact-Reward GRPO

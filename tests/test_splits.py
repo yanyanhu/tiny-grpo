@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tiny_grpo.splits import (
+    DEFAULT_RESERVED_TRAINING_SIZE,
     DiagnosticManifest,
     SplitMetadata,
     SplitOverlapError,
@@ -19,24 +20,54 @@ from tiny_grpo.splits import (
     save_split_metadata,
 )
 
+SMALL_RESERVED_TRAINING_SIZE = 40
+
+
+def _small_split(**overrides):
+    fields = dict(
+        train_pool_size=100,
+        test_pool_size=50,
+        train_size=20,
+        val_size=10,
+        test_size=8,
+        seed=42,
+        reserved_training_size=SMALL_RESERVED_TRAINING_SIZE,
+    )
+    fields.update(overrides)
+    return build_split_metadata(**fields)
+
 
 def test_determinism_same_seed_same_split():
-    a = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
-    b = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
+    a = _small_split()
+    b = _small_split()
     assert a.train_indices == b.train_indices
     assert a.val_indices == b.val_indices
     assert a.test_indices == b.test_indices
 
 
 def test_different_seed_gives_different_split():
-    a = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=1)
-    b = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=2)
+    a = _small_split(seed=1)
+    b = _small_split(seed=2)
     assert a.train_indices != b.train_indices
 
 
 def test_train_and_val_are_disjoint():
-    meta = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
+    meta = _small_split()
     assert_disjoint(meta.train_indices, meta.val_indices)  # must not raise
+
+
+def test_validation_is_invariant_when_training_size_changes():
+    smaller = _small_split(train_size=20)
+    larger = _small_split(train_size=35)
+
+    assert smaller.val_indices == larger.val_indices
+    assert set(smaller.train_indices) < set(larger.train_indices)
+    assert_disjoint(larger.train_indices, larger.val_indices)
+
+
+def test_training_size_cannot_exceed_reserved_region():
+    with pytest.raises(SplitSizeError, match="exceeds reserved_training_size"):
+        _small_split(train_size=41)
 
 
 def test_overlap_detection_raises():
@@ -45,25 +76,33 @@ def test_overlap_detection_raises():
 
 
 def test_sizes_match_request():
-    meta = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
+    meta = _small_split()
     assert meta.train_size == 20
     assert meta.val_size == 10
     assert meta.test_size == 8
 
 
 def test_indices_within_pool_bounds():
-    meta = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
+    meta = _small_split()
     assert all(0 <= i < 100 for i in meta.train_indices + meta.val_indices)
     assert all(0 <= i < 50 for i in meta.test_indices)
 
 
 def test_oversized_request_raises():
     with pytest.raises(SplitSizeError):
-        build_split_metadata(train_pool_size=10, test_pool_size=50, train_size=8, val_size=8, test_size=1, seed=42)
+        build_split_metadata(
+            train_pool_size=10,
+            test_pool_size=50,
+            train_size=8,
+            val_size=8,
+            test_size=1,
+            seed=42,
+            reserved_training_size=8,
+        )
 
 
 def test_persistence_roundtrip(tmp_path):
-    meta = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
+    meta = _small_split()
     path = tmp_path / "split_metadata.json"
     save_split_metadata(path, meta)
     loaded = load_split_metadata(path)
@@ -71,7 +110,7 @@ def test_persistence_roundtrip(tmp_path):
 
 
 def test_persisted_file_is_readable_json(tmp_path):
-    meta = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
+    meta = _small_split()
     path = tmp_path / "split_metadata.json"
     save_split_metadata(path, meta)
     raw = json.loads(path.read_text())
@@ -82,7 +121,7 @@ def test_persisted_file_is_readable_json(tmp_path):
 
 
 def test_metadata_equality_and_from_dict():
-    meta = build_split_metadata(train_pool_size=100, test_pool_size=50, train_size=20, val_size=10, test_size=8, seed=42)
+    meta = _small_split()
     rebuilt = SplitMetadata.from_dict(meta.to_dict())
     assert rebuilt == meta
 
@@ -98,6 +137,7 @@ class TestDiagnosticManifest:
             val_size=200,
             test_size=10,
             seed=42,
+            reserved_training_size=1024,
         )
 
         assert first == second
@@ -105,13 +145,26 @@ class TestDiagnosticManifest:
         assert len(first.diagnostic_indices) == 200
         assert_disjoint(training_meta.train_indices, first.diagnostic_indices)
 
-    def test_is_independent_of_smaller_run_profile_training_sizes(self):
+    def test_smaller_profiles_use_stable_prefixes_of_canonical_validation(self):
         manifest = build_diagnostic_manifest(2000, reserved_training_size=1024, diagnostic_size=200, seed=42)
-        smoke = build_split_metadata(2000, 100, train_size=64, val_size=16, test_size=10, seed=42)
-        debug = build_split_metadata(2000, 100, train_size=256, val_size=32, test_size=10, seed=42)
+        smoke = build_split_metadata(
+            2000, 100, train_size=64, val_size=16, test_size=10, seed=42,
+            reserved_training_size=1024,
+        )
+        debug = build_split_metadata(
+            2000, 100, train_size=256, val_size=32, test_size=10, seed=42,
+            reserved_training_size=1024,
+        )
 
-        assert manifest.diagnostic_indices != smoke.val_indices
-        assert manifest.diagnostic_indices != debug.val_indices
+        assert smoke.val_indices == sorted(manifest.diagnostic_indices[:16])
+        assert debug.val_indices == sorted(manifest.diagnostic_indices[:32])
+        assert smoke.val_indices == build_split_metadata(
+            2000, 100, train_size=512, val_size=16, test_size=10, seed=42,
+            reserved_training_size=1024,
+        ).val_indices
+
+    def test_default_reservation_matches_diagnostic_manifest_default(self):
+        assert DEFAULT_RESERVED_TRAINING_SIZE == build_diagnostic_manifest(2000).reserved_training_size
 
     def test_persistence_roundtrip(self, tmp_path):
         manifest = build_diagnostic_manifest(2000, reserved_training_size=1024, diagnostic_size=200, seed=42)
