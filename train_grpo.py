@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from datasets import load_dataset
+from peft import PeftConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
@@ -80,6 +81,25 @@ def model_init_kwargs(config: TrainingConfig) -> dict:
     if dtype is not None:
         kwargs["dtype"] = dtype
     return kwargs
+
+
+def load_training_model(config: TrainingConfig, device: str):
+    """Load the base model, optionally continuing one existing LoRA adapter."""
+    model = AutoModelForCausalLM.from_pretrained(config.model_id, **model_init_kwargs(config))
+    if config.initial_adapter_path is not None:
+        adapter_path = Path(config.initial_adapter_path)
+        if not adapter_path.is_dir():
+            raise FileNotFoundError(f"initial adapter path is not a directory: {adapter_path}")
+        adapter_config = PeftConfig.from_pretrained(str(adapter_path))
+        if adapter_config.base_model_name_or_path != config.model_id:
+            raise ValueError(
+                "initial adapter base model mismatch: "
+                f"expected {config.model_id!r}, got {adapter_config.base_model_name_or_path!r}"
+            )
+        model = PeftModel.from_pretrained(
+            model, str(adapter_path), is_trainable=True, config=adapter_config
+        )
+    return model.to(device)
 
 
 def build_grpo_config(config: TrainingConfig, run_dir: Path) -> GRPOConfig:
@@ -169,6 +189,8 @@ def main():
         help="Allow resuming a checkpoint that was run under a different --hardware profile "
         "(otherwise this fails loudly rather than silently attempting it).",
     )
+    parser.add_argument("--initial-adapter-path", type=Path)
+    parser.add_argument("--initial-adapter-source")
     parser.add_argument(
         "--set",
         action="append",
@@ -195,6 +217,14 @@ def main():
         except (ValueError, SyntaxError):
             value = raw_value
         config = apply_config_override(config, field, value)
+    if (args.initial_adapter_path is None) != (args.initial_adapter_source is None):
+        parser.error("--initial-adapter-path and --initial-adapter-source must be provided together")
+    if args.initial_adapter_path is not None:
+        config = dataclasses.replace(
+            config,
+            initial_adapter_path=str(args.initial_adapter_path.resolve()),
+            initial_adapter_source=args.initial_adapter_source,
+        )
     verify_precision_supported(device, config.precision)  # fails loudly, never silently substitutes
 
     for env_name, env_value in config.env_setup.items():
@@ -226,8 +256,7 @@ def main():
     grpo_config = build_grpo_config(config, run_dir)
 
     print(f"Loading model {config.model_id!r} (precision={config.precision})...")
-    model = AutoModelForCausalLM.from_pretrained(config.model_id, **model_init_kwargs(config))
-    model.to(device)
+    model = load_training_model(config, device)
     tokenizer = AutoTokenizer.from_pretrained(config.model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -262,7 +291,10 @@ def main():
             args=grpo_config,
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
-            peft_config=to_peft_lora_config(config.lora),
+            peft_config=(
+                None if config.initial_adapter_path is not None
+                else to_peft_lora_config(config.lora)
+            ),
             callbacks=[
                 JsonlLoggerCallback(run_dir / "metrics.jsonl", device=device),
                 ConsoleProgressCallback(device=device),

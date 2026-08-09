@@ -93,6 +93,8 @@ class TrainingConfig:
     checkpoint_retention: int = MAX_CHECKPOINTS_TO_KEEP
     eval_steps: int = 5
     output_dir: str = "outputs"
+    initial_adapter_path: str | None = None
+    initial_adapter_source: str | None = None
     resume: ResumeConfig = dataclasses.field(default_factory=ResumeConfig)
 
     def __post_init__(self) -> None:
@@ -115,6 +117,10 @@ def apply_config_override(config: TrainingConfig, field_path: str, value) -> Tra
 
 
 def validate(config: TrainingConfig) -> None:
+    if (config.initial_adapter_path is None) != (config.initial_adapter_source is None):
+        raise ConfigError("initial_adapter_path and initial_adapter_source must be set together")
+    if config.initial_adapter_path is not None and config.resume.mode != "none":
+        raise ConfigError("initial_adapter_path cannot be combined with checkpoint resume")
     if config.hardware_profile_name not in HARDWARE_PROFILES:
         raise ConfigError(
             f"unknown hardware_profile_name {config.hardware_profile_name!r}; "

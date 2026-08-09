@@ -63,6 +63,22 @@ def test_qwen_model_profile_is_explicit_and_suffixes_run_name():
     assert config.chat_template_kwargs == {"enable_thinking": False}
 
 
+def test_initial_adapter_path_and_source_are_paired():
+    with pytest.raises(ConfigError, match="must be set together"):
+        dataclasses.replace(smoke_config(CUDA_4GB), initial_adapter_path="adapter")
+
+
+def test_initial_adapter_cannot_be_combined_with_checkpoint_resume():
+    base = smoke_config(CUDA_4GB)
+    with pytest.raises(ConfigError, match="cannot be combined"):
+        dataclasses.replace(
+            base,
+            initial_adapter_path="adapter",
+            initial_adapter_source="sft-run",
+            resume=dataclasses.replace(base.resume, mode="latest"),
+        )
+
+
 def test_model_id_cannot_drift_from_selected_profile():
     with pytest.raises(ConfigError, match="model_id does not match"):
         dataclasses.replace(smoke_config(CUDA_4GB, model_profile=QWEN3_0_6B), model_id="wrong")

@@ -571,10 +571,18 @@ and thinking-distilled reached 53.0%, versus 38.0% base; distilled also raised
 mixed exact-reward groups from 36.0% to 47.5%. Paired pass@4 transitions favor
 distilled over base (45 versus 15, p=0.000135) and over gold-short (35 versus
 15, p=0.0066). The gain comes with lower valid format (75.75% versus 87.38%
-base) and higher truncation (21.63% versus 6.88%). The next sanctioned
-experiment is a short, otherwise unchanged G=4 GRPO debug from the distilled
-adapter, followed by the same canonical diagnostic. Do not change completion
-length, rewards, LoRA settings, or compressor in that experiment.
+base) and higher truncation (21.63% versus 6.88%). A generation-only 256-token
+canonical diagnostic subsequently raised distilled pass@4 to 62.0%, valid
+format to 94.5%, and reduced truncation to 1.25%, proving that 128 tokens is an
+inference bottleneck. A matched 10-step G=4 GRPO continuation at the safe
+128-token training cap did not add meaningful value: pass@4 moved only from
+53.0% to 54.0% (paired p=0.774), mixed groups slipped from 47.5% to 47.0%, and
+truncation worsened to 23.13%. Preserve the distilled SFT adapter as the
+preferred checkpoint. Do not extend the same GRPO configuration or add reward
+shaping; the next useful direction is supervised distillation
+coverage/conciseness or explicitly supported longer inference. A 256-token
+G=4 GRPO run is not sanctioned on this 4 GiB GPU because even the 128-token
+run approached the physical memory ceiling.
 
 ## Completion Criteria
 

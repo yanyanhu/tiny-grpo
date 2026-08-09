@@ -1080,6 +1080,62 @@ GRPO is useful if at least one of the following occurs without material regressi
 
 A lower policy loss is not sufficient evidence.
 
+## 3.6 Distilled-Adapter GRPO Evidence (2026-08-09)
+
+The GRPO path now accepts an explicit `initial_adapter_path` and source run,
+validates the adapter's base-model identity, loads the existing LoRA as
+trainable, and continues updating that adapter rather than creating or merging
+a second one. Initial-adapter loading is deliberately incompatible with
+checkpoint resume so the two initialization meanings cannot be confused.
+
+Before training, the distilled SFT adapter was evaluated generation-only on
+the canonical 200 prompts x 4 samples with only the cap changed from 128 to
+256. The run is `outputs/diagnostic_debug_20260809_192032`:
+
+| Metric | Distilled SFT, 128 | Distilled SFT, 256 |
+|---|---:|---:|
+| First-sample pass@1 | 25.5% | **31.5%** |
+| pass@4 | 53.0% | **62.0%** |
+| Sample exact accuracy | 27.25% | **33.13%** |
+| Mixed exact-reward groups | 47.5% | **53.5%** |
+| Valid format | 75.75% | **94.5%** |
+| Truncation | 21.63% | **1.25%** |
+| Average completion length | 91.5 | 100.5 |
+
+The 256-token cap recovered 12 first-sample and 18 pass@4 prompts while losing
+none of the 128-token successes (paired exact p=0.000488 and p=0.000008).
+Therefore 128 tokens is a demonstrated inference bottleneck. This does not
+establish 256-token GRPO feasibility: the unchanged 128-token G=4 training run
+already used about 3.95 GiB of the physical 4 GiB GPU during generation.
+
+A one-step warm-start smoke completed in
+`outputs/smoke_qwen3_distilled_grpo_warm_start_20260809_194736`. The bounded
+experiment then continued the original distilled adapter for 10 GRPO steps in
+`outputs/debug_qwen3_distilled_grpo_10step_20260809_200503`, using G=4,
+128 tokens, beta 0.04, the original exact plus format rewards, linear LR, and
+the deterministic 256-example training pool. It completed without OOM and
+retained checkpoints 5/10 plus the final adapter. The canonical final-adapter
+diagnostic is `outputs/diagnostic_debug_20260809_202815`:
+
+| Metric | Distilled SFT | SFT + 10-step GRPO | Change |
+|---|---:|---:|---:|
+| First-sample pass@1 | 25.5% | 27.5% | +2.0 pp |
+| pass@4 | 53.0% | 54.0% | +1.0 pp |
+| Sample exact accuracy | 27.25% | 28.75% | +1.50 pp |
+| Mixed exact-reward groups | 47.5% | 47.0% | -0.5 pp |
+| Valid format | 75.75% | 75.13% | -0.62 pp |
+| Truncation | 21.63% | 23.13% | +1.50 pp |
+
+Paired transitions were 10 GRPO-only versus 6 SFT-only pass@1 successes
+(p=0.454) and 7 versus 5 pass@4 successes (p=0.774). The small gains are not
+statistically meaningful; reward diversity did not improve, and truncation
+worsened. Decision: retain the distilled SFT adapter as the preferred
+checkpoint and do not extend this GRPO configuration. Reward shaping is also
+not justified by starvation because the distilled policy already has 47.5%
+mixed exact-reward groups. The next useful work should focus on supervised
+distillation coverage/conciseness or explicitly supported longer inference,
+not more of the same GRPO.
+
 ---
 
 # Phase 4 — Add Conservative Reward Shaping Only If Needed
