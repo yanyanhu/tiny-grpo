@@ -17,7 +17,12 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from tiny_grpo.config import debug_config, longer_config, smoke_config
-from tiny_grpo.diagnostics import aggregate_rollout_groups, build_prompt_record, score_rollout_completion
+from tiny_grpo.diagnostics import (
+    aggregate_rollout_groups,
+    build_prompt_record,
+    completion_ids_and_termination,
+    score_rollout_completion,
+)
 from tiny_grpo.hardware import (
     HARDWARE_PROFILES,
     resolve_device,
@@ -48,14 +53,6 @@ def _git_commit() -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip()
-
-
-def _completion_ids_and_termination(sequence, prompt_length: int, eos_token_ids: set[int]):
-    completion_ids = sequence[prompt_length:]
-    for index, token_id in enumerate(completion_ids.tolist()):
-        if token_id in eos_token_ids:
-            return completion_ids[: index + 1], True
-    return completion_ids, False
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -254,7 +251,7 @@ def main() -> None:
                 scored = []
                 prompt_length = inputs["input_ids"].shape[1]
                 for sequence in output_ids:
-                    completion_ids, terminated = _completion_ids_and_termination(
+                    completion_ids, terminated = completion_ids_and_termination(
                         sequence, prompt_length, eos_token_ids
                     )
                     completion_text = tokenizer.decode(completion_ids, skip_special_tokens=True)

@@ -51,6 +51,18 @@ def test_sft_allows_explicit_precision_override():
     assert config.precision == "fp16"
 
 
+def test_matched_sft_source_requires_a_data_path():
+    with pytest.raises(SFTConfigError, match="require training_data_path"):
+        dataclasses.replace(
+            sft_smoke_config(CUDA_4GB), training_data_source="matched_gold_short"
+        )
+
+
+def test_external_data_path_requires_a_matched_source():
+    with pytest.raises(SFTConfigError, match="gsm8k_gold forbids"):
+        dataclasses.replace(sft_smoke_config(CUDA_4GB), training_data_path="data.jsonl")
+
+
 @pytest.mark.parametrize("field", ["logging_steps", "checkpoint_steps", "eval_steps"])
 def test_sft_rejects_nonpositive_cadence(field):
     with pytest.raises(SFTConfigError, match=field):
@@ -96,9 +108,10 @@ def test_trainer_config_enables_completion_only_loss(tmp_path):
 
 
 class _MappingTokenizer:
-    def apply_chat_template(self, conversation, tokenize):
+    def apply_chat_template(self, conversation, tokenize, add_generation_prompt=False):
         assert tokenize is True
-        return {"input_ids": [10, 11, 12, 13], "attention_mask": [1, 1, 1, 1]}
+        length = 2 if add_generation_prompt else 4
+        return {"input_ids": list(range(length)), "attention_mask": [1] * length}
 
 
 def test_length_audit_counts_mapping_input_ids_not_mapping_keys():
@@ -106,6 +119,17 @@ def test_length_audit_counts_mapping_input_ids_not_mapping_keys():
     stats = audit_sft_lengths(dataset, _MappingTokenizer(), max_sequence_length=4)
     assert stats["min_tokens"] == 4
     assert stats["max_tokens"] == 4
+    assert stats["prompt_tokens"]["max"] == 2
+    assert stats["assistant_tokens"]["max"] == 2
+    assert stats["total_tokens"]["p95"] == 4
+
+
+def test_length_audit_reports_assistant_completion_limit():
+    dataset = [{"prompt": [{"role": "user", "content": "q"}], "completion": [{"role": "assistant", "content": "a"}]}]
+    stats = audit_sft_lengths(
+        dataset, _MappingTokenizer(), max_sequence_length=4, max_completion_length=1
+    )
+    assert stats["num_assistant_over_completion_limit"] == 1
 
 
 def test_length_audit_rejects_silent_truncation():

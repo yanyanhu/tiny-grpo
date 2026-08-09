@@ -563,8 +563,18 @@ probe did expand pass@4 substantially when allowed up to 1,024 completion
 tokens, but useful traces averaged hundreds of tokens and still truncated
 frequently. Treat thinking mode as a teacher/capability source, not as a
 direct GRPO configuration for this hardware. The next sanctioned training
-direction is bounded Qwen3 SFT/distillation into the short non-thinking output
-format, followed by the fixed canonical diagnostic.
+direction was completed as a controlled, prompt-matched Qwen3 SFT comparison
+within the short non-thinking output format. The two 146-example arms differed
+only in official gold-short versus exact-verified, compressed thinking-teacher
+targets. On the fixed canonical diagnostic, gold-short reached 43.0% pass@4
+and thinking-distilled reached 53.0%, versus 38.0% base; distilled also raised
+mixed exact-reward groups from 36.0% to 47.5%. Paired pass@4 transitions favor
+distilled over base (45 versus 15, p=0.000135) and over gold-short (35 versus
+15, p=0.0066). The gain comes with lower valid format (75.75% versus 87.38%
+base) and higher truncation (21.63% versus 6.88%). The next sanctioned
+experiment is a short, otherwise unchanged G=4 GRPO debug from the distilled
+adapter, followed by the same canonical diagnostic. Do not change completion
+length, rewards, LoRA settings, or compressor in that experiment.
 
 ## Completion Criteria
 

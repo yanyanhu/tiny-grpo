@@ -62,6 +62,8 @@ class SFTTrainingConfig:
     eval_steps: int = 2
     output_dir: str = "outputs"
     completion_only_loss: bool = True
+    training_data_path: str | None = None
+    training_data_source: str = "gsm8k_gold"
     resume: ResumeConfig = dataclasses.field(default_factory=ResumeConfig)
 
     def __post_init__(self) -> None:
@@ -108,6 +110,11 @@ def validate_sft_config(config: SFTTrainingConfig) -> None:
         raise SFTConfigError("eval_steps must be >= 1")
     if not config.completion_only_loss:
         raise SFTConfigError("SFT requires completion_only_loss=True so prompt tokens are masked")
+    external_sources = {"matched_gold_short", "matched_teacher_distilled"}
+    if config.training_data_source not in {"gsm8k_gold", *external_sources}:
+        raise SFTConfigError(f"unsupported training_data_source {config.training_data_source!r}")
+    if (config.training_data_source in external_sources) != (config.training_data_path is not None):
+        raise SFTConfigError("matched SFT sources require training_data_path, and gsm8k_gold forbids it")
     if config.checkpoint_retention < 1 or config.checkpoint_retention > MAX_CHECKPOINTS_TO_KEEP:
         raise SFTConfigError(f"checkpoint_retention must be between 1 and {MAX_CHECKPOINTS_TO_KEEP}")
     if config.hardware_profile_name == CUDA_4GB.name and not config.gradient_checkpointing:

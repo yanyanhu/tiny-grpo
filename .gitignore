@@ -12,3 +12,4 @@ wheels/
 # Training artifacts
 outputs/
 run.log
+*_console.log

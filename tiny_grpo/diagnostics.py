@@ -11,6 +11,15 @@ import statistics
 from tiny_grpo.rewards import accuracy_reward, extract_predicted_answer, format_reward
 
 
+def completion_ids_and_termination(sequence, prompt_length: int, eos_token_ids: set[int]):
+    """Return generated IDs through the first EOS and whether EOS was seen."""
+    completion_ids = sequence[prompt_length:]
+    for index, token_id in enumerate(completion_ids.tolist()):
+        if token_id in eos_token_ids:
+            return completion_ids[: index + 1], True
+    return completion_ids, False
+
+
 def wilson_interval(successes: int, total: int, z: float = 1.959963984540054) -> dict:
     """Return a two-sided 95% Wilson score interval for a binomial rate."""
     if total < 1:

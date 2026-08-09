@@ -917,6 +917,74 @@ SFT/distillation of correct thinking-mode or GSM8K reasoning traces into the
 short non-thinking answer format. Revisit GRPO only after that warm start
 expands canonical coverage and mixed exact-reward groups.
 
+## 2.20 Matched Gold-Short versus Thinking-Distilled SFT Gate (2026-08-09)
+
+Before further GRPO, compare two Qwen3 non-thinking SFT warm starts. The
+gold-short arm uses official GSM8K reasoning targets that fit the 128-token
+completion envelope. The thinking-distilled arm uses exact-correct Qwen3
+thinking traces, compressed by an explicit non-thinking generation pass and
+then exact-verified again. Answer-only compressed outputs are rejected. Exact
+verification establishes the final answer but cannot guarantee that every
+intermediate sentence is semantically perfect, so provenance and rejection
+metadata remain part of the retained dataset.
+
+Use the exact same prompt IDs in both arms: intersect accepted distilled
+examples with examples whose gold targets also fit 128 tokens. Preserve order,
+unique-example count, effective epochs/optimizer exposure, LoRA settings,
+learning rate, non-thinking template mode, and all sampling/evaluation
+settings. This makes target provenance the intended causal variable.
+
+An 8-prompt CUDA smoke used two 1,024-token thinking candidates and two
+128-token compression attempts per prompt. Six prompts had an exact-correct,
+non-truncated thinking trajectory and all six produced a concise reasoned
+target accepted under the 128-token cap (75% usable yield). Maximum CUDA
+allocation was 1,437 MiB. A matched-data builder smoke retained all six prompt
+IDs in both arms with no validation/canonical overlap.
+
+The bounded run in `outputs/teacher_generation_20260809_123032` processed 256
+training prompts. Of 512 thinking candidates, 188 prompts had at least one
+exact-correct, non-truncated trajectory; compression produced 157 usable
+reasoned targets (61.3% prompt yield). Intersecting these with gold targets
+under the same cap removed 11 over-length gold examples and produced two
+prompt-identical 146-example datasets in
+`outputs/sft_comparison_data_20260809_165353`. Gold targets averaged 76.4
+tokens (P95 119, max 128); distilled targets averaged 74.5 tokens (P95 111,
+max 118).
+
+Both arms used Qwen3 non-thinking, identical LoRA/LR/seed/order settings, and
+38 optimizer steps (two effective epochs). The retained runs are
+`outputs/sft_matched_gold_short_2epoch_20260809_170729` and
+`outputs/sft_matched_teacher_distilled_2epoch_20260809_171251`. Their unchanged
+canonical diagnostics are `outputs/diagnostic_debug_20260809_171743` and
+`outputs/diagnostic_debug_20260809_173736`:
+
+| Metric | Base Qwen3 | Gold-short SFT | Thinking-distilled SFT |
+|---|---:|---:|---:|
+| First-sample pass@1 | 15.5% | 21.0% | **25.5%** |
+| pass@4 | 38.0% | 43.0% | **53.0%** |
+| Sample exact accuracy | 16.63% | 18.50% | **27.25%** |
+| Mixed exact-reward groups | 36.0% | 41.0% | **47.5%** |
+| Zero exact-reward-std groups | 64.0% | 59.0% | **52.5%** |
+| Valid format | **87.38%** | 77.38% | 75.75% |
+| Truncation | **6.88%** | 17.50% | 21.63% |
+
+Paired prompt transitions support a real distilled-policy improvement. Against
+base, thinking-distilled had 39 versus 19 exclusive pass@1 successes (exact
+McNemar p=0.0119) and 45 versus 15 exclusive pass@4 successes (p=0.000135).
+Against gold-short, it had 35 versus 15 exclusive pass@4 successes (p=0.0066);
+the pass@1 difference was not decisive (33 versus 24, p=0.289). Gold-short was
+directionally positive over base but not significant at either prompt-level
+gate.
+
+Decision: verified model-native thinking distillation clearly improves exact
+coverage and the density of learnable mixed-reward groups beyond ordinary
+short gold SFT. It also makes completions longer, more frequently truncated,
+and less format-compliant. Preserve the distilled adapter as the winning warm
+start. The next sanctioned experiment is a short unchanged G=4 GRPO debug from
+that adapter, followed by the same canonical diagnostic; do not introduce a
+frontier compressor, longer completions, reward shaping, or LoRA changes at
+the same time.
+
 ---
 
 # Phase 3 — Continue the SFT Adapter with Exact-Reward GRPO

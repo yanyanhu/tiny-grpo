@@ -36,7 +36,7 @@ from tiny_grpo.sft_config import (
     sft_stronger_config,
 )
 from tiny_grpo.sft_data import audit_sft_lengths, to_sft_example
-from tiny_grpo.splits import build_split_metadata, select_split
+from tiny_grpo.splits import SplitMetadata, assert_disjoint, build_split_metadata, select_split
 from tiny_grpo.trainer_callbacks import ConsoleProgressCallback, JsonlLoggerCallback
 
 RUN_PROFILES = {
@@ -60,12 +60,36 @@ def build_datasets(config: SFTTrainingConfig):
     train_rows = select_split(train_pool, metadata.train_indices)
     val_rows = select_split(train_pool, metadata.val_indices)
     map_kwargs = {"chat_template_kwargs": config.chat_template_kwargs}
-    train = train_rows.map(
-        to_sft_example,
-        fn_kwargs=map_kwargs,
-        remove_columns=train_pool.column_names,
-        load_from_cache_file=False,
-    )
+    if config.training_data_path is None:
+        train = train_rows.map(
+            to_sft_example,
+            fn_kwargs=map_kwargs,
+            remove_columns=train_pool.column_names,
+            load_from_cache_file=False,
+        )
+    else:
+        train = load_dataset("json", data_files=config.training_data_path, split="train")
+        required = {"prompt_id", "prompt", "completion", "chat_template_kwargs"}
+        if not required.issubset(train.column_names):
+            raise ValueError(f"external SFT data is missing columns {sorted(required - set(train.column_names))}")
+        prompt_ids = list(train["prompt_id"])
+        if len(prompt_ids) != len(set(prompt_ids)):
+            raise ValueError("external SFT data contains duplicate prompt IDs")
+        if any(value != config.chat_template_kwargs for value in train["chat_template_kwargs"]):
+            raise ValueError("external SFT chat-template mode does not match the model profile")
+        reserved = build_split_metadata(
+            len(train_pool), len(test_pool), 1024, config.dataset.val_size,
+            config.dataset.test_size, config.dataset.split_seed,
+        )
+        if not set(prompt_ids).issubset(reserved.train_indices):
+            raise ValueError("external SFT prompt IDs are outside the reserved training split")
+        assert_disjoint(prompt_ids, metadata.val_indices)
+        metadata = SplitMetadata(
+            seed=metadata.seed,
+            train_indices=prompt_ids,
+            val_indices=metadata.val_indices,
+            test_indices=metadata.test_indices,
+        )
     validation = val_rows.map(
         to_sft_example,
         fn_kwargs=map_kwargs,
@@ -133,6 +157,11 @@ def main() -> None:
     parser.add_argument("--verification-run", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--resume", default="none")
     parser.add_argument("--allow-cross-profile-resume", action="store_true")
+    parser.add_argument("--train-data-path", type=Path)
+    parser.add_argument(
+        "--training-data-source",
+        choices=("matched_gold_short", "matched_teacher_distilled"),
+    )
     parser.add_argument("--set", action="append", default=[], metavar="FIELD=VALUE")
     args = parser.parse_args()
 
@@ -153,6 +182,14 @@ def main() -> None:
         except (ValueError, SyntaxError):
             value = raw
         config = dataclasses.replace(config, **{field: value})
+    if (args.train_data_path is None) != (args.training_data_source is None):
+        parser.error("--train-data-path and --training-data-source must be provided together")
+    if args.train_data_path is not None:
+        config = dataclasses.replace(
+            config,
+            training_data_path=str(args.train_data_path.resolve()),
+            training_data_source=args.training_data_source,
+        )
     verify_precision_supported(device, config.precision)
     for name, value in config.env_setup.items():
         os.environ[name] = value
@@ -180,8 +217,12 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
     length_stats = {
-        "train": audit_sft_lengths(train, tokenizer, config.max_sequence_length),
-        "validation": audit_sft_lengths(validation, tokenizer, config.max_sequence_length),
+        "train": audit_sft_lengths(
+            train, tokenizer, config.max_sequence_length, config.max_completion_length
+        ),
+        "validation": audit_sft_lengths(
+            validation, tokenizer, config.max_sequence_length, config.max_completion_length
+        ),
     }
     _write_json(run_dir / "sft_data_stats.json", length_stats)
     eval_kwargs = dict(
