@@ -1252,6 +1252,71 @@ the preferred checkpoint and treat supervised distillation quality or longer
 generation-only inference as the productive direction. Reward shaping,
 pass@8 training, longer GRPO, and LoRA-rank tuning remain unsupported.
 
+### Seed replication and added-target quality follow-up — 2026-08-10
+
+To distinguish a genuinely flat scaling result from training stochasticity,
+the 311-example SFT run was repeated with training seed 27182 instead of 42.
+Everything else remained fixed: the exact stored examples and row order,
+split seed, Qwen3 non-thinking mode, LoRA configuration, bf16 CUDA profile,
+learning rate and linear scheduler, effective batch eight, and 78 optimizer
+steps (two effective epochs). The replicate is
+`outputs/sft_debug_qwen3_0_6b_20260810_192453`; its canonical diagnostics are
+`outputs/diagnostic_debug_20260810_193321` (128 tokens) and
+`outputs/diagnostic_debug_20260810_195851` (256 tokens).
+
+| Metric | Earlier 146, 128 | Original 311, 128 | Replicate 311, 128 | Earlier 146, 256 | Original 311, 256 | Replicate 311, 256 |
+|---|---:|---:|---:|---:|---:|---:|
+| First-sample pass@1 | 25.5% | 27.0% | 28.5% | 31.5% | 29.5% | 31.5% |
+| pass@4 | 53.0% | 52.5% | 55.5% | 62.0% | 57.0% | 61.0% |
+| Sample exact | 27.25% | 26.63% | 27.25% | 33.13% | 29.13% | 30.75% |
+| Mixed exact groups | 47.5% | 46.0% | 51.0% | 53.5% | 49.5% | 55.0% |
+| Valid format | 75.75% | 85.38% | 82.13% | 94.5% | 97.88% | 97.25% |
+| Truncation | 21.63% | 14.0% | 17.13% | 1.25% | 0.5% | 0.63% |
+
+The apparent replicate gains over the original 311 run were not decisive.
+At pass@4, replicate versus original had 19 gains versus 13 losses at 128
+tokens (p=0.377), and 21 versus 13 at 256 tokens (p=0.229). Replicate versus
+the earlier 146-example checkpoint had 19 versus 14 at 128 (p=0.487), and 18
+versus 20 at 256 (p=0.871). Training seed can move pass@4 by several percentage
+points, but the less truncation-confounded 256-token result still shows no
+consistent benefit from expanding 146 targets to 311. The flat scaling
+conclusion is therefore reproducible at the experiment level rather than an
+artifact of seed 42 alone.
+
+The original 146 distilled targets are an exact subset of the expanded data:
+all 146 prompt IDs overlap, all corresponding target texts are identical, no
+old ID is missing, and 165 targets are newly added. Structural measurements do
+not show that the added targets are predominantly shorter or simpler:
+
+| Target property | Original 146 | Added 165 |
+|---|---:|---:|
+| Mean tokens (P50 / P95) | 74.45 (73 / 111) | 75.84 (72 / 118) |
+| Mean arithmetic/operator markers | 4.43 | 4.53 |
+| Mean numeric mentions | 8.60 | 8.97 |
+| Mean reasoning segments | 3.30 | 3.53 |
+| Targets at most 40 tokens | 6.16% | 7.88% |
+| At most one reasoning segment | 8.22% | 4.85% |
+| No explicit operator marker | 9.59% | 14.55% |
+| Exact or normalized-template duplicates | 0 | 0 |
+
+A deterministic seed-20260810 manual sample of 20 added targets found several
+quality defects that exact-final-answer filtering cannot detect: prompt 3431
+has reasoning disconnected from its final result; prompt 6647 contains a
+false displayed arithmetic equality; prompt 6591 is nearly a bare conclusion;
+prompt 957 has confusing intermediate wording; and prompt 502 retains
+unnecessary "Final answer" prose. A matched 20-target original sample was not
+perfect either (prompt 500 has a verbal/arithmetic inconsistency and prompt
+852 is nearly a bare conclusion), so the small review does not establish a
+large distribution shift. It does show that some added supervision is noisy
+despite exact-correct final answers.
+
+Decision: do not change training strategy on this evidence alone. The added
+targets contain genuine arithmetic content and are not merely redundant style
+examples, but target consistency is a plausible bottleneck. Preserve the
+earlier 146-example adapter as preferred. The next discussion should consider
+whether intermediate-reasoning verification or higher-quality target curation
+is warranted before generating or training on more distilled examples.
+
 ---
 
 # Phase 4 — Add Conservative Reward Shaping Only If Needed

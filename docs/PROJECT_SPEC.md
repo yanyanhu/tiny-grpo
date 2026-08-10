@@ -600,6 +600,19 @@ rank tuning without a new evidence-based hypothesis. Preserve the earlier
 distilled adapter; further analysis should focus on supervised target quality
 and the already-demonstrated benefit of longer generation-only inference.
 
+A second-seed replication of the 311-example, two-epoch SFT run confirms that
+the scaling result is noisy but still flat overall. Seed 27182 reached 55.5%
+pass@4 at 128 tokens and 61.0% at 256, versus 52.5%/57.0% for seed 42 and
+53.0%/62.0% for the preferred 146-example adapter. Paired differences were
+not significant, including replicate versus 146 at 256 tokens (18 gains,
+20 losses, p=0.871). The additional 165 targets have similar length,
+operator-count, numeric-content, and reasoning-segment distributions to the
+original targets, with no exact/template duplicates. Manual inspection does,
+however, find occasional incorrect or incoherent intermediate reasoning that
+passes exact-final-answer verification. Do not infer that more examples alone
+will help; consider target-quality verification/curation in the next analysis,
+without changing the current preferred checkpoint or training strategy yet.
+
 ## Completion Criteria
 
 The milestone is complete only when:
