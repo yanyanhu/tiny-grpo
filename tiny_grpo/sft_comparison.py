@@ -8,6 +8,42 @@ def target_token_count(tokenizer, target: str) -> int:
     return len(tokenizer(target, add_special_tokens=False)["input_ids"])
 
 
+def build_expanded_distilled_rows(teacher_rows: list[dict], train_pool, tokenizer,
+                                  max_target_tokens: int,
+                                  chat_template_kwargs: dict) -> tuple[list, dict]:
+    """Keep every unique accepted teacher target that fits the student cap."""
+    seen = set()
+    rows = []
+    dropped = {}
+    target_lengths = []
+    for teacher_row in teacher_rows:
+        prompt_id = teacher_row["prompt_id"]
+        if prompt_id in seen:
+            raise ValueError(f"duplicate teacher prompt_id {prompt_id}")
+        seen.add(prompt_id)
+        target = teacher_row["completion"][0]["content"]
+        tokens = target_token_count(tokenizer, target)
+        if tokens > max_target_tokens:
+            dropped["teacher_target_too_long"] = dropped.get("teacher_target_too_long", 0) + 1
+            continue
+        raw = train_pool[prompt_id]
+        rows.append({
+            "prompt_id": prompt_id,
+            "prompt": to_prompt(raw)["prompt"],
+            "completion": [{"role": "assistant", "content": target}],
+            "chat_template_kwargs": dict(chat_template_kwargs),
+            "source": teacher_row.get("source", "thinking_teacher_distilled"),
+        })
+        target_lengths.append(tokens)
+    return rows, {
+        "teacher_input_examples": len(teacher_rows),
+        "accepted_examples": len(rows),
+        "accepted_prompt_ids": [row["prompt_id"] for row in rows],
+        "dropped_reasons": dropped,
+        "target_token_lengths": target_lengths,
+    }
+
+
 def build_matched_sft_rows(teacher_rows: list[dict], train_pool, tokenizer,
                            max_target_tokens: int, chat_template_kwargs: dict) -> tuple[list, list, dict]:
     """Intersect accepted teacher rows with gold targets fitting the same cap."""

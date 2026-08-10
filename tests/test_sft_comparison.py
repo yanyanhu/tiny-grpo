@@ -2,7 +2,7 @@
 
 import pytest
 
-from tiny_grpo.sft_comparison import build_matched_sft_rows
+from tiny_grpo.sft_comparison import build_expanded_distilled_rows, build_matched_sft_rows
 
 
 class _Tokenizer:
@@ -45,3 +45,24 @@ def test_comparison_rejects_duplicate_teacher_prompt_ids():
     teacher = [_teacher(0, "Work 2 + 3 = 5.\n<answer>5</answer>")] * 2
     with pytest.raises(ValueError, match="duplicate"):
         build_matched_sft_rows(teacher, pool, _Tokenizer(), 128, {})
+
+
+def test_expanded_distillation_keeps_targets_without_gold_intersection():
+    pool = [{"question": "Q?", "answer": "a very long gold target that is irrelevant\n#### 5"}]
+    teacher = [_teacher(0, "Short proof.\n<answer>5</answer>")]
+    rows, summary = build_expanded_distilled_rows(
+        teacher, pool, _Tokenizer(), 4, {"enable_thinking": False}
+    )
+    assert len(rows) == 1
+    assert rows[0]["prompt_id"] == 0
+    assert summary["accepted_examples"] == 1
+
+
+def test_expanded_distillation_rejects_duplicate_ids_and_overlong_targets():
+    pool = [{"question": "Q?", "answer": "Reason.\n#### 5"}]
+    overlong = [_teacher(0, "one two three four")]
+    rows, summary = build_expanded_distilled_rows(overlong, pool, _Tokenizer(), 3, {})
+    assert rows == []
+    assert summary["dropped_reasons"] == {"teacher_target_too_long": 1}
+    with pytest.raises(ValueError, match="duplicate"):
+        build_expanded_distilled_rows(overlong * 2, pool, _Tokenizer(), 128, {})

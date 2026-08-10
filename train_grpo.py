@@ -38,7 +38,7 @@ from tiny_grpo.model_profiles import MODEL_PROFILES, resolve_model_profile
 from tiny_grpo.resume import resolve_resume_target
 from tiny_grpo.rewards import accuracy_reward, format_reward, to_prompt
 from tiny_grpo.run_context import make_run_dir, save_run_metadata, update_run_status
-from tiny_grpo.splits import build_split_metadata, select_split
+from tiny_grpo.splits import SplitMetadata, assert_disjoint, build_split_metadata, select_split
 from tiny_grpo.trainer_callbacks import ConsoleProgressCallback, JsonlLoggerCallback
 
 RUN_PROFILES = {"smoke": smoke_config, "debug": debug_config, "longer": longer_config}
@@ -56,6 +56,22 @@ def build_datasets(config: TrainingConfig):
         test_size=config.dataset.test_size,
         seed=config.dataset.split_seed,
     )
+    if config.training_manifest_path is not None:
+        manifest = json.loads(Path(config.training_manifest_path).read_text())
+        prompt_ids = list(manifest["selected_prompt_ids"])
+        if len(prompt_ids) != len(set(prompt_ids)):
+            raise ValueError("training manifest contains duplicate prompt IDs")
+        reserved = build_split_metadata(
+            len(train_pool), len(test_pool), 1024, config.dataset.val_size,
+            config.dataset.test_size, config.dataset.split_seed,
+        )
+        if not set(prompt_ids).issubset(reserved.train_indices):
+            raise ValueError("training manifest prompt IDs are outside the reserved training split")
+        assert_disjoint(prompt_ids, split_metadata.val_indices)
+        split_metadata = SplitMetadata(
+            seed=split_metadata.seed, train_indices=prompt_ids,
+            val_indices=split_metadata.val_indices, test_indices=split_metadata.test_indices,
+        )
 
     # load_from_cache_file=False: datasets.map() fingerprints by more than just
     # source code in ways that don't reliably invalidate on every to_prompt
@@ -191,6 +207,8 @@ def main():
     )
     parser.add_argument("--initial-adapter-path", type=Path)
     parser.add_argument("--initial-adapter-source")
+    parser.add_argument("--training-manifest", type=Path)
+    parser.add_argument("--training-manifest-source")
     parser.add_argument(
         "--set",
         action="append",
@@ -224,6 +242,14 @@ def main():
             config,
             initial_adapter_path=str(args.initial_adapter_path.resolve()),
             initial_adapter_source=args.initial_adapter_source,
+        )
+    if (args.training_manifest is None) != (args.training_manifest_source is None):
+        parser.error("--training-manifest and --training-manifest-source must be provided together")
+    if args.training_manifest is not None:
+        config = dataclasses.replace(
+            config,
+            training_manifest_path=str(args.training_manifest.resolve()),
+            training_manifest_source=args.training_manifest_source,
         )
     verify_precision_supported(device, config.precision)  # fails loudly, never silently substitutes
 

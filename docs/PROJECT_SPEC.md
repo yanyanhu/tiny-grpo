@@ -584,6 +584,22 @@ coverage/conciseness or explicitly supported longer inference. A 256-token
 G=4 GRPO run is not sanctioned on this 4 GiB GPU because even the 128-token
 run approached the physical memory ceiling.
 
+The follow-up expanded-distillation and rollout-viability curriculum gate is
+also complete. Scaling teacher generation to 512 prompts produced 311 usable
+short targets, but the resulting two-epoch SFT adapter did not improve exact
+accuracy over the earlier 146-example distilled adapter (52.5% versus 53.0%
+pass@4 at 128 tokens, paired p=1.0), despite better format and truncation.
+Using the earlier adapter as the frozen accuracy checkpoint, a 512-prompt
+rollout audit found 239 high-signal and only 43 strict frontier prompts. A
+matched ten-step ordinary-versus-curriculum GRPO comparison then reached
+54.0% versus 53.0% canonical pass@4; neither differed meaningfully from the
+53.0% SFT checkpoint, and curriculum did not beat ordinary sampling. The
+predeclared stop condition is met. Do not spend further `cuda_4gb` runs on
+GRPO curriculum, more steps, reward shaping, pass@8, 256-token GRPO, or LoRA
+rank tuning without a new evidence-based hypothesis. Preserve the earlier
+distilled adapter; further analysis should focus on supervised target quality
+and the already-demonstrated benefit of longer generation-only inference.
+
 ## Completion Criteria
 
 The milestone is complete only when:

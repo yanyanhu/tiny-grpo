@@ -160,7 +160,7 @@ def main() -> None:
     parser.add_argument("--train-data-path", type=Path)
     parser.add_argument(
         "--training-data-source",
-        choices=("matched_gold_short", "matched_teacher_distilled"),
+        choices=("matched_gold_short", "matched_teacher_distilled", "expanded_teacher_distilled"),
     )
     parser.add_argument("--set", action="append", default=[], metavar="FIELD=VALUE")
     args = parser.parse_args()

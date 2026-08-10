@@ -110,7 +110,9 @@ def validate_sft_config(config: SFTTrainingConfig) -> None:
         raise SFTConfigError("eval_steps must be >= 1")
     if not config.completion_only_loss:
         raise SFTConfigError("SFT requires completion_only_loss=True so prompt tokens are masked")
-    external_sources = {"matched_gold_short", "matched_teacher_distilled"}
+    external_sources = {
+        "matched_gold_short", "matched_teacher_distilled", "expanded_teacher_distilled"
+    }
     if config.training_data_source not in {"gsm8k_gold", *external_sources}:
         raise SFTConfigError(f"unsupported training_data_source {config.training_data_source!r}")
     if (config.training_data_source in external_sources) != (config.training_data_path is not None):

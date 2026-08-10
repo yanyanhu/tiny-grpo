@@ -1136,6 +1136,122 @@ mixed exact-reward groups. The next useful work should focus on supervised
 distillation coverage/conciseness or explicitly supported longer inference,
 not more of the same GRPO.
 
+## 3.7 Expanded Distillation and Rollout-Viability Curriculum (Planned 2026-08-09)
+
+The next controlled milestone asks whether more verified thinking-distillation
+coverage strengthens the short policy, and whether GRPO benefits from prompts
+selected by actual behavior within its 128-token hardware envelope.
+
+Execute this as strict stages:
+
+1. Generate two thinking candidates and two non-thinking compression attempts
+   for a deterministic 512-prompt training pool. Retain every exact-correct,
+   non-truncated, reasoned target that re-verifies and fits 128 student tokens;
+   do not intersect it with the gold-short comparison arm.
+2. Train Qwen3 non-thinking on all accepted targets for two effective epochs,
+   preserving the existing LoRA, learning rate, seed, ordering, and hardware
+   settings. Freeze this adapter before curriculum construction.
+3. Run the unchanged canonical 200-prompt x 4-sample diagnostic at 128 tokens
+   and a generation-only 256-token diagnostic. Continue to GRPO only after
+   recording this SFT gate against the current preferred distilled adapter.
+4. On the frozen expanded adapter, use a separate predeclared selection seed
+   to collect four 128-token non-thinking rollouts per candidate training
+   prompt. The later GRPO run and canonical evaluation use different seeds;
+   canonical evaluation remains seed 42.
+5. Classify prompts deterministically: high-signal means 1--3 exact samples;
+   frontier means zero exact, at least 3/4 naturally terminated, at least 3/4
+   valid, and a verified teacher target exists; low-value means at least 3/4
+   truncated or fewer than two valid samples; stable means 4/4 exact.
+6. Compare matched ordinary and curriculum GRPO arms from the same expanded
+   adapter, with identical unique-example count, exposure, G=4, 128-token cap,
+   rewards, beta, LR/scheduler, LoRA, and ten optimizer steps. Predeclare a
+   60% high-signal / 30% frontier / 10% stable-or-unfiltered mixture and record
+   any deterministic fallback caused by insufficient category counts.
+
+The expanded SFT stage uses all accepted targets, so its optimizer-step count
+is computed only after coverage is known: two times the ceiling of accepted
+examples divided by the effective batch size. This preserves two effective
+epochs rather than reusing a step count tied to the earlier 146-example arm.
+
+Decision rules remain conservative. If expanded SFT improves canonical exact
+coverage, retain it. If curriculum GRPO clearly beats its matched ordinary
+arm, retain the curriculum under the 128-token constraint. If both GRPO arms
+remain flat despite dense mixed groups, stop GRPO tuning on this hardware and
+prefer supervised distillation plus longer generation-only inference. Do not
+combine this milestone with reward shaping, pass@8 training, 256-token GRPO,
+LoRA-rank changes, or a new compressor model.
+
+### Execution record — 2026-08-10
+
+The 512-prompt teacher run is
+`outputs/teacher_generation_20260809_223233`. Two thinking candidates and two
+non-thinking compression attempts per prompt produced 366 prompts with a
+verified teacher trajectory and 311 accepted compressed targets (60.74% usable
+yield). All 311 targets were unique, averaged 75.2 tokens (P50 72, P95 114,
+maximum 125), and remained inside the 128-token student envelope. Teacher
+generation completed in 13,115 seconds with 1,455 MiB peak CUDA allocation.
+
+The expanded adapter in `outputs/sft_debug_qwen3_0_6b_20260810_103343` trained
+for 78 optimizer steps, exactly two effective epochs at effective batch eight.
+Its canonical runs are `outputs/diagnostic_debug_20260810_104203` (128 tokens)
+and `outputs/diagnostic_debug_20260810_144504` (256 tokens):
+
+| Metric | Earlier distilled 128 | Expanded 128 | Earlier distilled 256 | Expanded 256 |
+|---|---:|---:|---:|---:|
+| First-sample pass@1 | 25.5% | 27.0% | 31.5% | 29.5% |
+| pass@4 | 53.0% | 52.5% | 62.0% | 57.0% |
+| Sample exact | 27.25% | 26.63% | 33.13% | 29.13% |
+| Mixed exact groups | 47.5% | 46.0% | 53.5% | 49.5% |
+| Valid format | 75.75% | 85.38% | 94.5% | 97.88% |
+| Truncation | 21.63% | 14.0% | 1.25% | 0.5% |
+
+At 128 tokens, expanded versus earlier distilled had 19 versus 16 exclusive
+pass@1 successes (p=0.736) and 14 versus 15 exclusive pass@4 successes
+(p=1.0). More coverage improved format and brevity but not exact capability;
+at 256 tokens it was directionally worse. The earlier 146-example distilled
+adapter therefore remained the frozen accuracy checkpoint for the curriculum
+gate. This is a deliberate refinement from the initial plan, not a hidden
+change of starting policy.
+
+Using selection seed 31415, four 128-token rollouts were collected for all 512
+training prompts in `outputs/diagnostic_debug_20260810_153416`. The frozen
+adapter achieved 33.01% pass@1, 59.18% pass@4, 33.94% sample exact accuracy,
+46.68% mixed groups, and 19.34% truncation. Classification found 239
+high-signal, 43 frontier, 64 stable, 55 low-value, and 111 unclassified
+prompts. Because only 43 strict frontier prompts existed, the requested
+60/30/10 mixture required 34 deterministic fallback selections. The final
+256-prompt curriculum contained 163 high-signal, 43 frontier, 16 stable, 23
+unclassified, and 11 low-value prompts. The matched ordinary control sampled
+256 prompts from the same 512-prompt region. Both manifests and all criteria
+are persisted in that rollout directory.
+
+Both GRPO arms continued the same earlier distilled adapter for ten steps with
+training seed 27182, G=4, 128 tokens, beta 0.04, linear LR, unchanged exact and
+format rewards, and identical LoRA/hardware/evaluation settings. The ordinary
+run is `outputs/debug_qwen3_0_6b_20260810_164620`; the curriculum run is
+`outputs/debug_qwen3_0_6b_20260810_171115`. Canonical results are
+`outputs/diagnostic_debug_20260810_174058` and
+`outputs/diagnostic_debug_20260810_180354`:
+
+| Metric | Distilled SFT | Ordinary GRPO | Curriculum GRPO |
+|---|---:|---:|---:|
+| First-sample pass@1 | 25.5% | 27.5% | 25.0% |
+| pass@4 | 53.0% | 54.0% | 53.0% |
+| Sample exact | 27.25% | 28.25% | 27.50% |
+| Mixed exact groups | 47.5% | 49.0% | 47.5% |
+| Valid format | 75.75% | 77.50% | 76.63% |
+| Truncation | 21.63% | 21.25% | 21.50% |
+
+Ordinary versus SFT had 7 versus 5 exclusive pass@4 successes (p=0.774).
+Curriculum versus SFT had 5 versus 5 (p=1.0). Curriculum versus ordinary had
+6 versus 8 (p=0.791). Thus neither GRPO arm improved meaningfully, and
+model-relative curriculum selection did not outperform ordinary sampling.
+The predeclared stopping rule is met: stop further GRPO tuning on `cuda_4gb`
+under the 128-token constraint. Preserve the earlier distilled SFT adapter as
+the preferred checkpoint and treat supervised distillation quality or longer
+generation-only inference as the productive direction. Reward shaping,
+pass@8 training, longer GRPO, and LoRA-rank tuning remain unsupported.
+
 ---
 
 # Phase 4 — Add Conservative Reward Shaping Only If Needed

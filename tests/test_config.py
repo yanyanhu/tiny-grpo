@@ -68,6 +68,11 @@ def test_initial_adapter_path_and_source_are_paired():
         dataclasses.replace(smoke_config(CUDA_4GB), initial_adapter_path="adapter")
 
 
+def test_training_manifest_path_and_source_are_paired():
+    with pytest.raises(ConfigError, match="training_manifest_path"):
+        dataclasses.replace(smoke_config(CUDA_4GB), training_manifest_path="ids.json")
+
+
 def test_initial_adapter_cannot_be_combined_with_checkpoint_resume():
     base = smoke_config(CUDA_4GB)
     with pytest.raises(ConfigError, match="cannot be combined"):

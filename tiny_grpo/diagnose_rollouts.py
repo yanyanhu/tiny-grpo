@@ -34,7 +34,7 @@ from tiny_grpo.monitoring import device_memory_mb, process_memory_mb
 from tiny_grpo.model_profiles import chat_template_kwargs
 from tiny_grpo.rewards import to_prompt
 from tiny_grpo.run_context import RunTags, collect_environment_info, make_run_dir, save_run_tags, update_run_status
-from tiny_grpo.splits import load_diagnostic_manifest, select_split
+from tiny_grpo.splits import assert_disjoint, load_diagnostic_manifest, select_split
 
 RUN_PROFILES = {"smoke": smoke_config, "debug": debug_config, "longer": longer_config}
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "data" / "diagnostic_manifest_v1.json"
@@ -81,6 +81,11 @@ def main() -> None:
     parser.add_argument("--profile", choices=sorted(RUN_PROFILES), default="debug")
     parser.add_argument("--hardware", choices=sorted(HARDWARE_PROFILES), required=True)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument(
+        "--prompt-ids-file",
+        type=Path,
+        help="Optional JSON file containing selected_prompt_ids from the reserved training pool.",
+    )
     parser.add_argument("--num-prompts", type=int, default=16)
     parser.add_argument("--num-generations", type=int, default=4)
     parser.add_argument("--max-completion-length", type=int, default=None)
@@ -127,11 +132,20 @@ def main() -> None:
         parser.error("--max-completion-length must be >= 1")
 
     manifest = load_diagnostic_manifest(args.manifest)
-    if args.num_prompts > len(manifest.diagnostic_indices):
+    prompt_source = "canonical_diagnostic"
+    available_indices = manifest.diagnostic_indices
+    if args.prompt_ids_file is not None:
+        prompt_ids_data = json.loads(args.prompt_ids_file.read_text())
+        available_indices = list(prompt_ids_data["selected_prompt_ids"])
+        if len(available_indices) != len(set(available_indices)):
+            parser.error("--prompt-ids-file contains duplicate prompt IDs")
+        assert_disjoint(available_indices, manifest.diagnostic_indices)
+        prompt_source = "explicit_training_ids"
+    if args.num_prompts > len(available_indices):
         parser.error(
-            f"--num-prompts={args.num_prompts} exceeds manifest size {len(manifest.diagnostic_indices)}"
+            f"--num-prompts={args.num_prompts} exceeds available prompt count {len(available_indices)}"
         )
-    selected_indices = manifest.diagnostic_indices[: args.num_prompts]
+    selected_indices = available_indices[: args.num_prompts]
 
     run_dir = make_run_dir(args.output_dir, f"diagnostic_{args.profile}")
     save_run_tags(
@@ -155,6 +169,8 @@ def main() -> None:
         "adapter_path": str(args.adapter_path) if args.adapter_path else None,
         "manifest_path": str(args.manifest),
         "manifest_version": manifest.version,
+        "prompt_source": prompt_source,
+        "prompt_ids_file": str(args.prompt_ids_file) if args.prompt_ids_file else None,
         "selected_prompt_ids": selected_indices,
         "num_prompts": args.num_prompts,
         "num_generations": args.num_generations,
